@@ -1,7 +1,0 @@
-"swrp"
-{
-	"base" 			"helix"
-	"title" 		"StarWarsRP"
-	"author" 		"Sam"
-	"menusystem"	"1"
-}

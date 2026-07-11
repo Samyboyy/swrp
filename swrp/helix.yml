@@ -1,7 +1,0 @@
-database:
-  adapter: "mysqloo"
-  hostname: "db-par-03.apollopanel.com"
-  username: "u242295_L3ccspTQJL"
-  password: "fgyOOiYw-EdWuVzvj9u_VSxQ"
-  database: "s242295_skylake"
-  port: 3306
