@@ -39,8 +39,8 @@ SWRP.Navigator.maps["rp_venator_extensive_v1_4"] = {
 		-- than trying to map an arbitrary room to a decorative hull mesh. The 3D
 		-- model still rotates, but the visible target dot stays locked to the
 		-- approved place on the ship silhouette.
-		hologramScreenAnchor = Vector(-0.04, 0.42, 0),
-		hologramCalloutAnchor = Vector(0.23, 0.30, 0),
+		hologramScreenAnchor = Vector(-0.12, 0.56, 0),
+		hologramCalloutAnchor = Vector(0.22, 0.34, 0),
 		hologramScreenOffset = Vector(0, 0, 0),
 		hologramAnchor = Vector(0.54, 0.50, 0.34),
 		hologramLabel = "Training Room",

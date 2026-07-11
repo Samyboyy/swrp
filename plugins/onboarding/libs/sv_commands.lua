@@ -225,9 +225,14 @@ ix.command.Add("SWRPDebugChar", {
 		client:ChatPrint(string.format("  rank:              %q", character:GetRank()))
 		client:ChatPrint(string.format("  regiment:          %q", character:GetRegiment()))
 		client:ChatPrint(string.format("  preferredRegiment: %q", character:GetPreferredRegiment()))
+		client:ChatPrint(string.format("  careerPath:        %q", character:GetCareerPath()))
+		client:ChatPrint(string.format("  careerTarget:      %q  [legacy]", character:GetCareerTarget()))
+		client:ChatPrint(string.format("  startingAptitude:  %q  applied: %s",
+			character:GetStartingAptitude(), tostring(character:GetStartingAptitudeApplied())))
+		client:ChatPrint(string.format("  creditVersion:     %d", character:GetProgressionCreditVersion() or 0))
 		client:ChatPrint(string.format("  discordUsername:   %q", character:GetDiscordUsername()))
 		client:ChatPrint(string.format("  xp: %d   level: %d", character:GetXp() or 0, character:GetLevel() or 0))
-		client:ChatPrint(string.format("  skillPoints: %d   freeChangePointsSpent: %d",
+		client:ChatPrint(string.format("  developmentCredits: %d   freeChangePointsSpent: %d",
 			character:GetSkillPoints() or 0, character:GetFreeChangePointsSpent() or 0))
 		client:ChatPrint(string.format("  buildLocked: %s", tostring(character:GetBuildLocked())))
 		client:ChatPrint(string.format("  trainingCompleted: %s   stage: %d   version: %d",
@@ -237,5 +242,36 @@ ix.command.Add("SWRPDebugChar", {
 		client:ChatPrint(string.format("  => derived onboarding state: %s", SWRP.GetOnboardingState(character)))
 
 		return string.format("Printed SWRP data for %s to your chat.", ply:Nick())
+	end
+})
+
+ix.command.Add("SWRPSetDoctrine", {
+	description = "Assign a development doctrine to an existing character (infantry, medical, heavy, aviation).",
+	adminOnly = true,
+	arguments = {ix.type.player, ix.type.string},
+	OnRun = function(self, client, target, value)
+		if (not IsValid(target)) then return "Invalid target player." end
+		local character = target:GetCharacter()
+		if (not character) then return "That player has no loaded character." end
+
+		local aliases = {
+			infantry = "conditioning",
+			physical = "conditioning",
+			conditioning = "conditioning",
+			medical = "medical",
+			medic = "medical",
+			heavy = "weapons",
+			weapons = "weapons",
+			aviation = "aviation",
+			pilot = "aviation"
+		}
+		local doctrineID = aliases[string.lower(string.Trim(tostring(value or "")))]
+		local doctrine = doctrineID and SWRP.GetCareerPath(doctrineID) or nil
+		if (not doctrine) then return "Invalid doctrine. Use: infantry, medical, heavy, or aviation." end
+
+		character:SetCareerPath(doctrineID)
+		character:SetCareerTarget("")
+		target:Notify("Your development doctrine is now " .. doctrine.title .. ".")
+		return string.format("Assigned %s to the %s doctrine.", target:Name(), doctrine.title)
 	end
 })

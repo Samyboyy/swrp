@@ -10,4 +10,4 @@
 
 PLUGIN.name = "SWRP Onboarding"
 PLUGIN.author = "Sam"
-PLUGIN.description = "Persistent onboarding character data, derived player-state, and admin debug tools."
+PLUGIN.description = "Battlefront-style character onboarding, doctrine selection, starting aptitude and persistent service records."

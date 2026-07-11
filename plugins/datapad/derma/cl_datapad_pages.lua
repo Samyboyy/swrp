@@ -896,6 +896,32 @@ local function drawBeam(x1, y1, x2, y2, colour, thickness)
     })
 end
 
+local function drawSector(cx, cy, innerRadius, outerRadius, startDegrees, endDegrees, colour, segments)
+    segments = segments or 32
+    if outerRadius <= innerRadius then return end
+
+    local vertices = {}
+    for index = 0, segments do
+        local angle = math.rad(Lerp(index / segments, startDegrees, endDegrees))
+        vertices[#vertices + 1] = {
+            x = cx + math.cos(angle) * outerRadius,
+            y = cy + math.sin(angle) * outerRadius
+        }
+    end
+
+    for index = segments, 0, -1 do
+        local angle = math.rad(Lerp(index / segments, startDegrees, endDegrees))
+        vertices[#vertices + 1] = {
+            x = cx + math.cos(angle) * innerRadius,
+            y = cy + math.sin(angle) * innerRadius
+        }
+    end
+
+    draw.NoTexture()
+    surface.SetDrawColor(colour)
+    surface.DrawPoly(vertices)
+end
+
 local function branchColour(node, alpha)
     local colour = node and node.colour or {73, 132, 207}
     return Color(colour[1] or 73, colour[2] or 132, colour[3] or 207, alpha or 255)
@@ -1300,27 +1326,39 @@ function PANEL:Paint(width, height)
     end
 
     local mask = self:GetMask()
+    local rootX, rootY = self:WorldToPanel(tree.root.x, tree.root.y)
+    local rootRadius = math.Clamp(58 * self.zoom, 35, 62)
 
-    -- Each discipline gets a soft nebula glow rather than a hard rectangle, so
-    -- the branches feel like separate constellations without losing clarity.
+    -- Tint each discipline as a wedge radiating out from the centre node. This
+    -- keeps each path visually grouped, while still making the connecting lines
+    -- and node order easy to read.
     for _, branch in ipairs(tree.branches or {}) do
-        local minimumY, maximumY = math.huge, -math.huge
-        local minimumX, maximumX = math.huge, -math.huge
-        for _, node in ipairs(branch.nodes or {}) do
-            minimumX = math.min(minimumX, node.x)
-            maximumX = math.max(maximumX, node.x)
-            minimumY = math.min(minimumY, node.y)
-            maximumY = math.max(maximumY, node.y)
-        end
+        local startAngle = tonumber(branch.sectorStart)
+        local endAngle = tonumber(branch.sectorEnd)
 
-        if minimumY ~= math.huge then
-            local cx, cy = self:WorldToPanel((minimumX + maximumX) * 0.5, (minimumY + maximumY) * 0.5)
-            local x1, y1 = self:WorldToPanel(minimumX, minimumY)
-            local x2, y2 = self:WorldToPanel(maximumX, maximumY)
-            local glowRadius = math.max(math.abs(x2 - x1), math.abs(y2 - y1)) * 0.42
+        if startAngle and endAngle then
+            local outerRadius = rootRadius + 180
+
+            for _, node in ipairs(branch.nodes or {}) do
+                local nodeX, nodeY = self:WorldToPanel(node.x, node.y)
+                local dx, dy = nodeX - rootX, nodeY - rootY
+                outerRadius = math.max(outerRadius, math.sqrt(dx * dx + dy * dy) + math.Clamp(100 * self.zoom, 72, 126))
+            end
+
             local colour = Color(branch.colour[1], branch.colour[2], branch.colour[3])
-            filledCircle(cx, cy, glowRadius, Color(colour.r, colour.g, colour.b, 10), 36)
-            filledCircle(cx, cy, glowRadius * 0.68, Color(colour.r, colour.g, colour.b, 6), 28)
+            local innerRadius = rootRadius + math.Clamp(150 * self.zoom, 92, 146)
+            drawSector(rootX, rootY, innerRadius, outerRadius, startAngle, endAngle, Color(colour.r, colour.g, colour.b, 9), 42)
+
+            -- Thin sector boundaries keep each discipline visually separate
+            -- without the coloured areas overpowering the actual pathways.
+            for _, boundaryAngle in ipairs({startAngle, endAngle}) do
+                local radians = math.rad(boundaryAngle)
+                local x1 = rootX + math.cos(radians) * innerRadius
+                local y1 = rootY + math.sin(radians) * innerRadius
+                local x2 = rootX + math.cos(radians) * outerRadius
+                local y2 = rootY + math.sin(radians) * outerRadius
+                drawBeam(x1, y1, x2, y2, Color(colour.r, colour.g, colour.b, 60), math.Clamp(3 * self.zoom, 1, 3))
+            end
         end
     end
 
@@ -1332,24 +1370,35 @@ function PANEL:Paint(width, height)
             if requirement then
                 local x1, y1 = self:WorldToPanel(requirement.x, requirement.y)
                 local x2, y2 = self:WorldToPanel(node.x, node.y)
-                local colour = branchColour(node, 145)
+                local colour = branchColour(node, 175)
+                local glow = Color(colour.r, colour.g, colour.b, 48)
+                local core = Color(215, 232, 242, 62)
 
                 if tree.IsUnlocked(mask, requirement) and tree.IsUnlocked(mask, node) then
-                    colour = Color(105, 220, 175, 235)
+                    colour = Color(105, 220, 175, 255)
+                    glow = Color(105, 220, 175, 105)
+                    core = Color(235, 255, 246, 180)
                 elseif tree.PrerequisitesMet(mask, node) then
-                    colour = branchColour(node, 230)
+                    colour = branchColour(node, 255)
+                    glow = Color(colour.r, colour.g, colour.b, 105)
+                    core = Color(235, 247, 255, 145)
                 elseif tree.IsUnlocked(mask, requirement) then
-                    colour = branchColour(node, 155)
+                    colour = branchColour(node, 215)
+                    glow = Color(colour.r, colour.g, colour.b, 76)
+                    core = Color(220, 235, 245, 95)
                 end
 
-                drawBeam(x1, y1, x2, y2, Color(colour.r, colour.g, colour.b, math.floor((colour.a or 255) * 0.28)), math.Clamp(20 * self.zoom, 9, 20))
-                drawBeam(x1, y1, x2, y2, colour, math.Clamp(6 * self.zoom, 3, 6))
+                -- Three layers make every prerequisite route obvious even when
+                -- the node itself is still locked: dark separation, coloured
+                -- branch beam, then a fine bright core.
+                drawBeam(x1, y1, x2, y2, Color(0, 5, 10, 220), math.Clamp(18 * self.zoom, 9, 18))
+                drawBeam(x1, y1, x2, y2, glow, math.Clamp(14 * self.zoom, 7, 14))
+                drawBeam(x1, y1, x2, y2, colour, math.Clamp(7 * self.zoom, 4, 7))
+                drawBeam(x1, y1, x2, y2, core, math.Clamp(2.2 * self.zoom, 1.2, 2.2))
             end
         end
     end
 
-    local rootX, rootY = self:WorldToPanel(tree.root.x, tree.root.y)
-    local rootRadius = math.Clamp(58 * self.zoom, 35, 62)
     filledCircle(rootX, rootY, rootRadius + 10, Color(accent.r, accent.g, accent.b, 22), 42)
     filledCircle(rootX, rootY, rootRadius, Color(7, 24, 37, 252), 42)
     surface.SetDrawColor(accent.r, accent.g, accent.b, 210)
