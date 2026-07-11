@@ -7,7 +7,8 @@ SWRP.Regiments = SWRP.Regiments or {}
 local REG = SWRP.Regiments
 REG.snapshot = REG.snapshot or {
 	personnel = {},
-	recruitment = {}
+	recruitment = {},
+	modelAssignments = {}
 }
 REG.panels = REG.panels or {}
 
@@ -90,6 +91,215 @@ local function getNodeName(id, fallback)
 	return node and node.name or (fallback or prettyID(id))
 end
 
+local function drawFittedText(text, fonts, x, y, maximumWidth, colour, horizontalAlignment, verticalAlignment)
+	text = tostring(text or "")
+	fonts = istable(fonts) and fonts or {fonts or "DermaDefault"}
+	horizontalAlignment = horizontalAlignment or TEXT_ALIGN_LEFT
+	verticalAlignment = verticalAlignment or TEXT_ALIGN_TOP
+
+	local selectedFont = fonts[#fonts] or "DermaDefault"
+
+	for _, font in ipairs(fonts) do
+		surface.SetFont(font)
+		local width = surface.GetTextSize(text)
+
+		if (width <= maximumWidth) then
+			selectedFont = font
+			break
+		end
+	end
+
+	draw.SimpleText(text, selectedFont, x, y, colour, horizontalAlignment, verticalAlignment)
+	return selectedFont
+end
+
+
+local function cleanModelPath(value)
+	local model = string.Trim(tostring(value or "")):gsub("\\", "/")
+
+	if (model == "" or not string.EndsWith(string.lower(model), ".mdl")) then
+		return ""
+	end
+
+	return model
+end
+
+local function cleanBodygroups(value)
+	local bodygroups = {}
+
+	if (istable(value)) then
+		for rawIndex, rawValue in pairs(value) do
+			local index = math.floor(tonumber(rawIndex) or -1)
+			local bodygroup = math.floor(tonumber(rawValue) or -1)
+
+			if (index >= 0 and index <= 63 and bodygroup >= 0 and bodygroup <= 63) then
+				bodygroups[index] = bodygroup
+			end
+		end
+	else
+		for token in string.gmatch(tostring(value or ""), "[^,;%s]+") do
+			local rawIndex, rawValue = string.match(token, "^(%d+)%s*[:=]%s*(%d+)$")
+			local index = math.floor(tonumber(rawIndex) or -1)
+			local bodygroup = math.floor(tonumber(rawValue) or -1)
+
+			if (index >= 0 and index <= 63 and bodygroup >= 0 and bodygroup <= 63) then
+				bodygroups[index] = bodygroup
+			end
+		end
+	end
+
+	return bodygroups
+end
+
+local function bodygroupsToText(bodygroups)
+	local entries = {}
+
+	for rawIndex, rawValue in pairs(cleanBodygroups(bodygroups)) do
+		entries[#entries + 1] = {
+			index = tonumber(rawIndex) or 0,
+			value = tonumber(rawValue) or 0
+		}
+	end
+
+	table.sort(entries, function(a, b)
+		return a.index < b.index
+	end)
+
+	local output = {}
+	for _, entry in ipairs(entries) do
+		output[#output + 1] = tostring(entry.index) .. "=" .. tostring(entry.value)
+	end
+
+	return table.concat(output, ", ")
+end
+
+local function resolveUnitTypeModelAssignment(snapshot, regimentID, unitTypeID)
+	local assignments = snapshot and snapshot.modelAssignments or {}
+	regimentID = REG.GetPrimaryRegiment(regimentID)
+	unitTypeID = REG.ResolveUnitType(regimentID, unitTypeID)
+	local bucket = istable(assignments) and assignments[regimentID] or nil
+
+	if (not istable(bucket)) then
+		return nil
+	end
+
+	local assignment = bucket[unitTypeID]
+
+	if (istable(assignment) and cleanModelPath(assignment.model) ~= "") then
+		return assignment
+	end
+
+	return nil
+end
+
+local function collectAvailableModels()
+	local models = {}
+	local seen = {}
+
+	local function add(label, path)
+		path = cleanModelPath(path)
+		if (path == "" or seen[string.lower(path)]) then return end
+		seen[string.lower(path)] = true
+		models[#models + 1] = {
+			label = tostring(label or path),
+			path = path
+		}
+	end
+
+	if (player_manager and player_manager.AllValidModels) then
+		for label, path in pairs(player_manager.AllValidModels() or {}) do
+			add(label, path)
+		end
+	end
+
+	local function addFactionModels(value, label)
+		if (isstring(value)) then
+			add(label, value)
+		elseif (istable(value)) then
+			for _, nested in pairs(value) do
+				addFactionModels(nested, label)
+			end
+		end
+	end
+
+	if (ix.faction and ix.faction.indices) then
+		for _, faction in pairs(ix.faction.indices) do
+			addFactionModels(faction.models, faction.name or faction.uniqueID or "Faction model")
+		end
+	end
+
+	if (IsValid(LocalPlayer())) then
+		add("Current player model", LocalPlayer():GetModel())
+	end
+
+	table.sort(models, function(a, b)
+		return string.lower(a.label .. a.path) < string.lower(b.label .. b.path)
+	end)
+
+	return models
+end
+
+local function applyModelPreview(panel, modelPath, skin, bodygroups, framing)
+	if (not IsValid(panel)) then return false end
+	modelPath = cleanModelPath(modelPath)
+	framing = framing or "full"
+
+	if (modelPath == "" or not util.IsValidModel(modelPath)) then
+		return false
+	end
+
+	panel:SetModel(modelPath)
+	panel:SetFOV(framing == "portrait" and 30 or 34)
+	panel:SetAmbientLight(Color(85, 112, 132))
+	panel:SetDirectionalLight(BOX_FRONT, Color(205, 226, 238))
+	panel:SetDirectionalLight(BOX_TOP, Color(105, 139, 162))
+
+	local function configure()
+		if (not IsValid(panel)) then return end
+		local entity = panel:GetEntity()
+		if (not IsValid(entity)) then return end
+
+		entity:DrawShadow(false)
+		local maximumSkin = math.max((entity:SkinCount() or 1) - 1, 0)
+		entity:SetSkin(math.Clamp(math.floor(tonumber(skin) or 0), 0, maximumSkin))
+
+		for index = 0, math.max(entity:GetNumBodyGroups() - 1, 0) do
+			entity:SetBodygroup(index, 0)
+		end
+
+		for rawIndex, rawValue in pairs(cleanBodygroups(bodygroups)) do
+			local index = math.floor(tonumber(rawIndex) or -1)
+			if (index >= 0 and index < entity:GetNumBodyGroups()) then
+				entity:SetBodygroup(index, math.max(math.floor(tonumber(rawValue) or 0), 0))
+			end
+		end
+
+		local minimum, maximum = entity:GetRenderBounds()
+		local height = math.max(maximum.z - minimum.z, 1)
+
+		if (framing == "portrait") then
+			-- Keep the helmet and face comfortably inside the personnel-record
+			-- viewport. A slightly higher focal point moves the model down in-frame,
+			-- while the extra camera distance adds a small amount of headroom.
+			local targetZ = minimum.z + height * 0.84
+			panel:SetLookAt(Vector(0, 0, targetZ))
+			panel:SetCamPos(Vector(height * 0.76, height * 0.035, targetZ + height * 0.02))
+		else
+			panel:SetLookAt(Vector(0, 0, minimum.z + height * 0.51))
+			panel:SetCamPos(Vector(height * 1.02, height * 0.04, minimum.z + height * 0.52))
+		end
+	end
+
+	configure()
+	timer.Simple(0, configure)
+	panel.LayoutEntity = function(_, entity)
+		if (IsValid(entity)) then
+			entity:SetAngles(Angle(0, 18, 0))
+		end
+	end
+	return true
+end
+
 local function getRecruitmentState(snapshot, node)
 	local stateID = snapshot.recruitment and snapshot.recruitment[node.id]
 
@@ -112,6 +322,11 @@ local function recordBelongsToNode(record, nodeID)
 	end
 
 	if (node.kind == "unit") then
+		if (node.filterByUnitType and node.unitType) then
+			return REG.GetPrimaryRegiment(record.regiment) == REG.GetPrimaryRegiment(node.id)
+				and REG.ResolveUnitType(record.regiment, record.unitType) == node.unitType
+		end
+
 		return REG.ResolveID(record.unit) == node.id
 	end
 
@@ -133,7 +348,8 @@ local function recordMatchesSearch(record, searchText)
 		tostring(record.rank or ""),
 		tostring(record.billet or ""),
 		getNodeName(record.regiment, ""),
-		getNodeName(record.unit, "")
+		getNodeName(record.unit, ""),
+		REG.GetUnitTypeName(record.regiment, record.unitType)
 	}, " ")
 
 	return string.find(string.lower(haystack), searchText, 1, true) ~= nil
@@ -230,7 +446,7 @@ local function createServiceRecord(record)
 
 	local left = frame:Add("DPanel")
 	left:Dock(LEFT)
-	left:SetWide(286)
+	left:SetWide(310)
 	left:DockMargin(0, 0, 14, 0)
 	left:DockPadding(12, 12, 12, 12)
 	left.Paint = function(_, width, height)
@@ -243,12 +459,12 @@ local function createServiceRecord(record)
 	model:SetTall(330)
 	model:SetPaintBackground(false)
 	model:SetFOV(34)
-	model:SetCamPos(Vector(60, 0, 58))
-	model:SetLookAt(Vector(0, 0, 54))
+	model:SetCamPos(Vector(64, 0, 62))
+	model:SetLookAt(Vector(0, 0, 59))
 	model:SetMouseInputEnabled(false)
 
 	if (isstring(record.model) and record.model ~= "" and util.IsValidModel(record.model)) then
-		model:SetModel(record.model)
+		applyModelPreview(model, record.model, record.modelSkin or 0, record.modelBodygroups or {}, "portrait")
 	end
 
 	model.LayoutEntity = function(_, entity)
@@ -264,9 +480,48 @@ local function createServiceRecord(record)
 		draw.RoundedBox(3, 0, 0, width, height, Color(8, 21, 33, 245))
 		surface.SetDrawColor(accent.r, accent.g, accent.b, 170)
 		surface.DrawRect(0, 0, width, 3)
-		draw.SimpleText(record.displayName or record.name or "UNKNOWN", "DermaLarge", 13, 15, color_white)
-		draw.SimpleText(string.upper(record.rank or "CT") .. " • " .. getNodeName(record.regiment), "DermaDefaultBold", 14, 54, accent)
-		draw.SimpleText(unit and unit.name or "NO SUBUNIT ASSIGNMENT", "DermaDefault", 14, 78, TEXT_MUTED)
+		local publicName = string.Trim(tostring(record.callsign or ""))
+		if (publicName == "") then
+			publicName = record.displayName or record.name or "UNKNOWN"
+		end
+
+		local designation = table.concat({
+			REG.GetRegimentPrefix(record.regiment),
+			string.upper(record.rank or "RCT"),
+			tostring(record.cloneNumber or "")
+		}, " "):gsub("%s+$", "")
+
+		drawFittedText(
+			string.upper(publicName),
+			{"DermaLarge", "Trebuchet24", "DermaDefaultBold"},
+			13,
+			15,
+			width - 26,
+			color_white
+		)
+		drawFittedText(
+			designation .. " • " .. getNodeName(record.regiment),
+			{"DermaDefaultBold", "DermaDefault"},
+			14,
+			54,
+			width - 28,
+			accent
+		)
+		drawFittedText(
+			unit and unit.name or "NO SUBUNIT ASSIGNMENT",
+			{"DermaDefaultBold", "DermaDefault"},
+			14,
+			78,
+			width - 28,
+			TEXT_MUTED
+		)
+		draw.SimpleText(
+			"UNIT TYPE  •  " .. string.upper(REG.GetUnitTypeName(record.regiment, record.unitType)),
+			"DermaDefault",
+			14,
+			101,
+			TEXT_MUTED
+		)
 		draw.SimpleText(record.online and "● CURRENTLY ONLINE" or "● CURRENTLY OFFLINE", "DermaDefaultBold", 14, height - 37, record.online and ONLINE or OFFLINE)
 	end
 
@@ -276,11 +531,12 @@ local function createServiceRecord(record)
 	addSectionHeading(scroll, "Assignment", "Current public posting and service state", accent)
 	addInformationCard(scroll, "Regiment", getNodeName(record.regiment), accent, 76)
 	addInformationCard(scroll, "Unit", unit and unit.name or "No subunit assignment", accent, 76)
+	addInformationCard(scroll, "Unit Type", REG.GetUnitTypeName(record.regiment, record.unitType), accent, 76)
 	addInformationCard(scroll, "Billet", record.billet ~= "" and prettyID(record.billet) or "No command billet", accent, 76)
 	addInformationCard(scroll, "Service Status", string.upper(record.serviceStatus or "active"), accent, 76)
 
 	addSectionHeading(scroll, "Service Information", "Public dates and identification", accent)
-	addInformationCard(scroll, "Service Number", record.cloneNumber ~= "" and ("CT-" .. record.cloneNumber) or (record.name or "Not recorded"), accent, 76)
+	addInformationCard(scroll, "Service Number", record.cloneNumber ~= "" and (REG.GetRegimentPrefix(record.regiment) .. "-" .. record.cloneNumber) or (record.name or "Not recorded"), accent, 76)
 	addInformationCard(scroll, "Enlisted", formatDate(record.enlistedAt), accent, 76)
 	addInformationCard(scroll, "Last Promotion", formatDate(record.lastPromotionAt, "NO PROMOTION RECORDED"), accent, 76)
 
@@ -430,8 +686,24 @@ local function openPersonnelEditor(owner, node, record, permission)
 	scroll:Dock(FILL)
 
 	addSectionHeading(scroll, "Assignment", "Personnel changes apply immediately", accent)
-	addFieldLabel(scroll, "Rank abbreviation")
-	local rank = addTextField(scroll, record.rank or "CT", accent, 36, false)
+	addFieldLabel(scroll, "Rank")
+	local selectedRank = REG.NormalizeRank(record.rank) or "RCT"
+	local rank = scroll:Add("DComboBox")
+	rank:Dock(TOP)
+	rank:SetTall(36)
+	rank:SetValue(selectedRank .. " — " .. REG.GetRankName(selectedRank))
+
+	for _, abbreviation in ipairs(REG.rankOrder or {}) do
+		rank:AddChoice(abbreviation .. " — " .. REG.GetRankName(abbreviation), abbreviation)
+	end
+
+	rank.OnSelect = function(_, _, _, data)
+		selectedRank = data or selectedRank
+	end
+
+	addFieldLabel(scroll, "Callsign")
+	local callsign = addTextField(scroll, record.callsign or "", accent, 36, false)
+	callsign:SetPlaceholderText("Optional, e.g. Rex or Fives")
 
 	addFieldLabel(scroll, "Unit")
 	local selectedUnit = record.unit ~= "" and record.unit or "none"
@@ -448,6 +720,21 @@ local function openPersonnelEditor(owner, node, record, permission)
 		if (child.kind == "unit") then
 			unit:AddChoice(child.name, child.id)
 		end
+	end
+
+	addFieldLabel(scroll, "Unit type")
+	local regimentID = REG.GetPrimaryRegiment(record.regiment)
+	local selectedUnitType = REG.ResolveUnitType(regimentID, record.unitType)
+	local unitType = scroll:Add("DComboBox")
+	unitType:Dock(TOP)
+	unitType:SetTall(36)
+	unitType:SetValue(REG.GetUnitTypeName(regimentID, selectedUnitType))
+	unitType.OnSelect = function(_, _, _, data)
+		selectedUnitType = data or selectedUnitType
+	end
+
+	for _, option in ipairs(REG.GetUnitTypes(regimentID)) do
+		unitType:AddChoice(option.name, option.id)
 	end
 
 	addFieldLabel(scroll, "Command billet ID")
@@ -471,8 +758,10 @@ local function openPersonnelEditor(owner, node, record, permission)
 		addActionButton(scroll, "SAVE PERSONNEL RECORD", accent, function()
 			sendManagement("update_personnel", node.id, {
 				characterID = record.characterID,
-				rank = rank:GetValue(),
+				rank = selectedRank,
+				callsign = callsign:GetValue(),
 				unit = selectedUnit,
+				unitType = selectedUnitType,
 				billet = billet:GetValue(),
 				serviceStatus = selectedStatus
 			})
@@ -480,6 +769,27 @@ local function openPersonnelEditor(owner, node, record, permission)
 				if (IsValid(owner)) then owner:RequestSnapshot() end
 			end)
 		end)
+
+		local primaryNodeID = REG.GetPrimaryRegiment(node.id)
+		if (node.id == primaryNodeID and node.id ~= "unassigned") then
+			addActionButton(scroll, "REMOVE FROM REGIMENT", DANGER, function()
+				Derma_Query(
+					"Remove " .. (record.displayName or record.name or "this player") .. " from " .. (node.name or "the regiment") .. "?\n\nTheir clone number, callsign and rank will stay the same, but their prefix will return to CT.",
+					"Confirm Regiment Removal",
+					"REMOVE",
+					function()
+						sendManagement("remove_personnel", node.id, {
+							characterID = record.characterID
+						})
+						frame:Remove()
+						timer.Simple(0.4, function()
+							if (IsValid(owner)) then owner:RequestSnapshot() end
+						end)
+					end,
+					"CANCEL"
+				)
+			end, true)
+		end
 	end
 
 	addSectionHeading(scroll, "Service Record", "Certifications and commendations", accent)
@@ -516,7 +826,8 @@ net.Receive("swrpRegimentsSnapshot", function()
 		recruitment = {},
 		nodeOverrides = {},
 		training = {},
-		permissions = {}
+		permissions = {},
+		modelAssignments = {}
 	}
 
 	for panel in pairs(REG.panels) do
@@ -663,7 +974,12 @@ function PANEL:GetPersonnel(nodeID, includeSearch)
 		if (node.id == "gar") then
 			belongs = true
 		elseif (node.kind == "unit") then
-			belongs = REG.ResolveID(record.unit) == node.id
+			if (node.filterByUnitType and node.unitType) then
+				belongs = REG.GetPrimaryRegiment(record.regiment) == REG.GetPrimaryRegiment(node.id)
+					and REG.ResolveUnitType(record.regiment, record.unitType) == node.unitType
+			else
+				belongs = REG.ResolveID(record.unit) == node.id
+			end
 		else
 			belongs = REG.ResolveID(record.regiment) == node.id
 		end
@@ -809,6 +1125,8 @@ function PANEL:RefreshView()
 		self:BuildTrainingView(node)
 	elseif (self.activeView == "manage") then
 		self:BuildManageView(node)
+	elseif (self.activeView == "models") then
+		self:BuildModelsView(node)
 	else
 		self:BuildOverviewView(node)
 	end
@@ -892,12 +1210,16 @@ function PANEL:BuildTabs(node)
 		entries[#entries + 1] = {id = "manage", label = "MANAGE"}
 	end
 
+	if (self.snapshot.isStaff) then
+		entries[#entries + 1] = {id = "models", label = "MODELS"}
+	end
+
 	for _, tab in ipairs(entries) do
 		local tabID = tab.id
 		local tabLabel = tab.label
 		local button = self.tabs:Add("DButton")
 		button:Dock(LEFT)
-		button:SetWide(tabID == "manage" and 128 or 132)
+		button:SetWide((tabID == "manage" or tabID == "models") and 128 or 132)
 		button:DockMargin(0, 0, 7, 0)
 		button:SetText(tabLabel)
 		button:SetFont("DermaDefaultBold")
@@ -1123,7 +1445,15 @@ function PANEL:BuildPersonnelView(node)
 			surface.DrawRect(0, 0, 3, height)
 			draw.SimpleText(personnelRecord.online and "●" or "○", "DermaDefaultBold", 18, 32, personnelRecord.online and ONLINE or OFFLINE, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 			draw.SimpleText(personnelRecord.displayName or personnelRecord.name or "UNKNOWN", "DermaDefaultBold", 38, 11, color_white)
-			draw.SimpleText(string.upper(personnelRecord.rank or "CT") .. " • " .. getNodeName(personnelRecord.unit, getNodeName(personnelRecord.regiment)), "DermaDefault", 38, 36, accent)
+			draw.SimpleText(
+				string.upper(personnelRecord.rank or "RCT") .. " • " ..
+				getNodeName(personnelRecord.unit, getNodeName(personnelRecord.regiment)) .. " • " ..
+				string.upper(REG.GetUnitTypeName(personnelRecord.regiment, personnelRecord.unitType)),
+				"DermaDefault",
+				38,
+				36,
+				accent
+			)
 			draw.SimpleText(personnelRecord.billet ~= "" and prettyID(personnelRecord.billet) or string.upper(personnelRecord.serviceStatus or "active"), "DermaDefaultBold", width - (permission > 0 and 88 or 15), 24, TEXT_MUTED, TEXT_ALIGN_RIGHT)
 			if (permission > 0 and personnelRecord.online) then
 				draw.SimpleText("EDIT", "DermaDefaultBold", width - 18, 24, accent, TEXT_ALIGN_RIGHT)
@@ -1203,6 +1533,239 @@ function PANEL:BuildTrainingView(node)
 			draw.SimpleText(session.requirements ~= "" and session.requirements or "No additional requirements", "DermaDefault", width - 17, 84, TEXT_MUTED, TEXT_ALIGN_RIGHT)
 		end
 	end
+end
+
+function PANEL:BuildModelsView(node)
+	local accent = nodeColour(node)
+
+	if (not self.snapshot.isStaff) then
+		self:AddCompactPanel("Access denied", "Only server administrators can configure forced unit-type models.", DANGER, 82)
+		return
+	end
+
+	local regimentID = REG.GetPrimaryRegiment(node.id)
+	local regiment = REG.Get(regimentID)
+	local unitTypes = REG.GetUnitTypes(regimentID)
+
+	if (not regiment or #unitTypes == 0) then
+		self:AddCompactPanel("No model roles available", "This formation has no configurable unit types.", accent, 82)
+		return
+	end
+
+	addSectionHeading(self.content, "Unit-Type Models", "Administrator-only playermodel mapping for " .. regiment.name, accent)
+	self:AddCompactPanel(
+		"One model per unit type",
+		"Choose Standard Trooper, Heavy, Medic or another available unit type, then assign a completely separate player-model file. Regiment leaders choose who holds each unit type from Manage Personnel.",
+		accent,
+		96
+	)
+
+	local form = self.content:Add("DPanel")
+	form:Dock(TOP)
+	form:SetTall(570)
+	form:DockMargin(0, 0, 0, 10)
+	form:DockPadding(14, 14, 14, 14)
+	form.Paint = function(_, width, height)
+		draw.RoundedBox(3, 0, 0, width, height, PANEL_LIGHT)
+	end
+
+	local selectedUnitType = REG.ResolveUnitType(
+		regimentID,
+		node.unitType or REG.GetDefaultUnitType(regimentID)
+	)
+	local selectedUnitTypeData = REG.GetUnitType(regimentID, selectedUnitType)
+
+	local previewShell = form:Add("DPanel")
+	previewShell:Dock(LEFT)
+	previewShell:SetWide(300)
+	previewShell:DockMargin(0, 0, 14, 0)
+	previewShell:DockPadding(8, 8, 8, 8)
+	previewShell.Paint = function(_, width, height)
+		draw.RoundedBox(3, 0, 0, width, height, Color(3, 11, 19, 248))
+		drawCorners(0, 0, width, height, colourWithAlpha(accent, 100), 14)
+		draw.SimpleText("MODEL PREVIEW", "DermaDefaultBold", 14, 13, accent)
+		drawFittedText(
+			selectedUnitTypeData and string.upper(selectedUnitTypeData.name) or "UNIT TYPE",
+			{"Trebuchet24", "DermaDefaultBold"},
+			14,
+			36,
+			width - 28,
+			color_white
+		)
+	end
+
+	local preview = previewShell:Add("DModelPanel")
+	preview:Dock(FILL)
+	preview:DockMargin(0, 58, 0, 0)
+	preview:SetPaintBackground(false)
+	preview:SetMouseInputEnabled(false)
+	preview:SetVisible(false)
+
+	local controls = form:Add("DPanel")
+	controls:Dock(FILL)
+	controls.Paint = nil
+
+	addFieldLabel(controls, "Unit type")
+	local unitTypeChoice = controls:Add("DComboBox")
+	unitTypeChoice:Dock(TOP)
+	unitTypeChoice:SetTall(38)
+	unitTypeChoice:SetSortItems(false)
+
+	for _, option in ipairs(unitTypes) do
+		unitTypeChoice:AddChoice(option.name, option.id)
+	end
+
+	addFieldLabel(controls, "Available player models")
+	local modelChoice = controls:Add("DComboBox")
+	modelChoice:Dock(TOP)
+	modelChoice:SetTall(38)
+	modelChoice:SetSortItems(false)
+
+	for _, option in ipairs(collectAvailableModels()) do
+		modelChoice:AddChoice(option.label .. "  —  " .. option.path, option.path)
+	end
+
+	addFieldLabel(controls, "Player-model path")
+	local modelPath = addTextField(controls, "", accent, 38, false)
+	modelPath:SetPlaceholderText("models/.../player_model.mdl")
+
+	local status = controls:Add("DLabel")
+	status:Dock(TOP)
+	status:SetTall(72)
+	status:DockMargin(0, 10, 0, 0)
+	status:SetFont("DermaDefault")
+	status:SetWrap(true)
+	status:SetTextColor(TEXT_MUTED)
+
+	local saveButton
+	local clearButton
+
+	local function previewPath(path)
+		path = cleanModelPath(path)
+
+		if (path == "" or not util.IsValidModel(path)) then
+			preview:SetVisible(false)
+			return false
+		end
+
+		preview:SetVisible(true)
+		return applyModelPreview(preview, path, 0, {}, "full")
+	end
+
+	local function refreshUnitType()
+		selectedUnitTypeData = REG.GetUnitType(regimentID, selectedUnitType)
+		local direct = resolveUnitTypeModelAssignment(self.snapshot, regimentID, selectedUnitType)
+		local defaultUnitType = REG.GetDefaultUnitType(regimentID)
+		local fallback
+
+		if (not direct and selectedUnitType ~= defaultUnitType) then
+			fallback = resolveUnitTypeModelAssignment(self.snapshot, regimentID, defaultUnitType)
+		end
+
+		local directPath = direct and cleanModelPath(direct.model) or ""
+		local previewAssignment = direct or fallback
+		local previewModel = previewAssignment and cleanModelPath(previewAssignment.model) or ""
+
+		unitTypeChoice:SetValue(selectedUnitTypeData and selectedUnitTypeData.name or selectedUnitType)
+		modelPath:SetText(directPath)
+		modelChoice:SetValue(directPath ~= "" and directPath or "Select a distinct playermodel")
+
+		if (direct) then
+			status:SetText(
+				(selectedUnitTypeData and selectedUnitTypeData.name or "This unit type") ..
+				" has its own forced playermodel. Personnel assigned to it are updated immediately and again whenever they spawn."
+			)
+		elseif (fallback) then
+			status:SetText(
+				"No separate " .. (selectedUnitTypeData and selectedUnitTypeData.name or selectedUnitType) ..
+				" model is configured. It currently falls back to the regiment's " ..
+				REG.GetUnitTypeName(regimentID, defaultUnitType) .. " model."
+			)
+		else
+			status:SetText(
+				"No model is configured for this unit type. Personnel will use the configured CT model or their faction fallback until one is saved."
+			)
+		end
+
+		previewPath(previewModel)
+
+		if (IsValid(saveButton)) then
+			saveButton:SetText("SAVE " .. string.upper(selectedUnitTypeData and selectedUnitTypeData.name or selectedUnitType) .. " MODEL")
+		end
+
+		if (IsValid(clearButton)) then
+			clearButton:SetText("CLEAR " .. string.upper(selectedUnitTypeData and selectedUnitTypeData.name or selectedUnitType) .. " MODEL")
+			clearButton:SetEnabled(direct ~= nil)
+			clearButton:SetVisible(direct ~= nil)
+		end
+	end
+
+	unitTypeChoice.OnSelect = function(_, _, _, data)
+		selectedUnitType = REG.ResolveUnitType(regimentID, data)
+		refreshUnitType()
+	end
+
+	modelChoice.OnSelect = function(_, _, _, data)
+		local path = cleanModelPath(data)
+		modelPath:SetText(path)
+		previewPath(path)
+	end
+
+	modelPath.OnEnter = function()
+		if (not previewPath(modelPath:GetValue())) then
+			notification.AddLegacy("That model path is not currently valid on your client.", NOTIFY_ERROR, 3)
+		end
+	end
+
+	addActionButton(controls, "PREVIEW MODEL", accent, function()
+		if (not previewPath(modelPath:GetValue())) then
+			notification.AddLegacy("That model path is not currently valid on your client.", NOTIFY_ERROR, 3)
+		end
+	end)
+
+	addActionButton(controls, "USE MY CURRENT MODEL", accent, function()
+		if (not IsValid(LocalPlayer())) then return end
+		local path = cleanModelPath(LocalPlayer():GetModel())
+		modelPath:SetText(path)
+		previewPath(path)
+	end)
+
+	saveButton = addActionButton(controls, "SAVE UNIT-TYPE MODEL", accent, function()
+		local path = cleanModelPath(modelPath:GetValue())
+
+		if (path == "" or not util.IsValidModel(path)) then
+			notification.AddLegacy("Select a valid player model before saving.", NOTIFY_ERROR, 3)
+			return
+		end
+
+		sendManagement("save_model_assignment", regimentID, {
+			unitType = selectedUnitType,
+			model = path
+		})
+		timer.Simple(0.45, function()
+			if (IsValid(self)) then self:RequestSnapshot() end
+		end)
+	end)
+
+	clearButton = addActionButton(controls, "CLEAR UNIT-TYPE MODEL", DANGER, function()
+		local typeName = selectedUnitTypeData and selectedUnitTypeData.name or selectedUnitType
+		Derma_Query(
+			"Clear the forced " .. typeName .. " model for " .. regiment.name .. "?\n\nPersonnel of this type will fall back to the regiment's standard model, then the CT/faction model.",
+			"Clear Unit-Type Model",
+			"CLEAR",
+			function()
+				sendManagement("clear_model_assignment", regimentID, {
+					unitType = selectedUnitType
+				})
+				timer.Simple(0.45, function()
+					if (IsValid(self)) then self:RequestSnapshot() end
+				end)
+			end,
+			"CANCEL"
+		)
+	end, true)
+
+	refreshUnitType()
 end
 
 function PANEL:BuildManageView(node)
@@ -1340,7 +1903,7 @@ function PANEL:BuildManagePersonnel(node, permission)
 			surface.SetDrawColor(accent.r, accent.g, accent.b, personnelRecord.online and 140 or 35)
 			surface.DrawRect(0, 0, 3, height)
 			draw.SimpleText(personnelRecord.displayName or personnelRecord.name, "DermaDefaultBold", 15, 11, personnelRecord.online and color_white or TEXT_FAINT)
-			draw.SimpleText(string.upper(personnelRecord.rank or "CT") .. " • " .. getNodeName(personnelRecord.unit, node.name), "DermaDefault", 15, 36, personnelRecord.online and accent or TEXT_FAINT)
+			draw.SimpleText(string.upper(personnelRecord.rank or "RCT") .. " • " .. getNodeName(personnelRecord.unit, node.name), "DermaDefault", 15, 36, personnelRecord.online and accent or TEXT_FAINT)
 			draw.SimpleText(personnelRecord.online and "EDIT RECORD  ›" or "OFFLINE", "DermaDefaultBold", width - 16, 24, personnelRecord.online and accent or OFFLINE, TEXT_ALIGN_RIGHT)
 		end
 		row.DoClick = function()

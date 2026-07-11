@@ -23,6 +23,14 @@ registerIfMissing("billet", {
 	bNoDisplay = true
 })
 
+
+registerIfMissing("unitType", {
+	field = "unit_type",
+	fieldType = ix.type.string,
+	default = "",
+	bNoDisplay = true
+})
+
 registerIfMissing("serviceStatus", {
 	field = "service_status",
 	fieldType = ix.type.string,

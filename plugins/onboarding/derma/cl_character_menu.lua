@@ -2,7 +2,7 @@
 -- Complete Republic/Battlefront-inspired replacement for the Helix join, creation and load screens.
 
 SWRP = SWRP or {}
-SWRP.JoinMenuVersion = "4.1.0"
+SWRP.JoinMenuVersion = "4.3.0"
 
 local UI = {}
 UI.blue = Color(76, 143, 224)
@@ -96,6 +96,51 @@ local function drawCorners(x, y, width, height, colour, length, thickness)
 	surface.DrawRect(x + width - thickness, y + height - length, thickness, length)
 end
 
+local function drawArc(cx, cy, radius, startAngle, endAngle, colour, segments, thickness)
+	segments = math.max(segments or 40, 4)
+	thickness = math.max(thickness or 1, 1)
+	surface.SetDrawColor(colour)
+
+	local previousX
+	local previousY
+	for index = 0, segments do
+		local fraction = index / segments
+		local angle = math.rad(Lerp(fraction, startAngle, endAngle))
+		local cosine = math.cos(angle)
+		local sine = math.sin(angle)
+
+		for layer = 0, thickness - 1 do
+			local layerRadius = radius + layer
+			local x = cx + cosine * layerRadius
+			local y = cy + sine * layerRadius
+			if (previousX and layer == 0) then
+				surface.DrawLine(previousX, previousY, x, y)
+			end
+		end
+
+		previousX = cx + cosine * radius
+		previousY = cy + sine * radius
+	end
+end
+
+local function drawRadialTicks(cx, cy, innerRadius, outerRadius, count, rotation, colour)
+	count = math.max(count or 24, 4)
+	rotation = rotation or 0
+	surface.SetDrawColor(colour)
+
+	for index = 1, count do
+		local angle = math.rad(rotation + (index - 1) * (360 / count))
+		local cosine = math.cos(angle)
+		local sine = math.sin(angle)
+		surface.DrawLine(
+			cx + cosine * innerRadius,
+			cy + sine * innerRadius,
+			cx + cosine * outerRadius,
+			cy + sine * outerRadius
+		)
+	end
+end
+
 local function paintRepublicBackdrop(panel, width, height)
 	surface.SetDrawColor(2, 5, 10, 242)
 	surface.DrawRect(0, 0, width, height)
@@ -109,6 +154,8 @@ local function paintRepublicBackdrop(panel, width, height)
 	surface.DrawRect(0, 0, width, 2)
 	surface.DrawRect(0, height - 2, width, 2)
 end
+
+local fitText
 
 local function makeLabel(parent, text, font, colour, alignment)
 	local label = parent:Add("DLabel")
@@ -162,11 +209,14 @@ local function makeButton(parent, title, subtitle, callback, soundKind)
 		surface.DrawRect(0, 0, active and 5 or 2, height)
 		surface.DrawOutlinedRect(0, 0, width, height, active and 2 or 1)
 
+		local textWidth = math.max(width - 64, 20)
 		local titleY = this.subtitle ~= "" and height * 0.34 or height * 0.5
-		draw.SimpleText(this.title, "SWRPJoinHeading", 20, titleY, Color(UI.white.r, UI.white.g, UI.white.b, alpha), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+		local fittedTitle = fitText and fitText(this.title, "SWRPJoinHeading", textWidth) or this.title
+		draw.SimpleText(fittedTitle, "SWRPJoinHeading", 20, titleY, Color(UI.white.r, UI.white.g, UI.white.b, alpha), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 
 		if (this.subtitle ~= "") then
-			draw.SimpleText(this.subtitle, "SWRPJoinSmall", 20, height * 0.70, Color(UI.text.r, UI.text.g, UI.text.b, alpha * 0.75), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+			local fittedSubtitle = fitText and fitText(this.subtitle, "SWRPJoinSmall", textWidth) or this.subtitle
+			draw.SimpleText(fittedSubtitle, "SWRPJoinSmall", 20, height * 0.70, Color(UI.text.r, UI.text.g, UI.text.b, alpha * 0.75), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 		end
 
 		if (enabled) then
@@ -231,7 +281,7 @@ local function drawWrappedText(text, font, x, y, colour, maxWidth, lineHeight)
 	return drawY
 end
 
-local function fitText(text, font, maxWidth)
+fitText = function(text, font, maxWidth)
 	text = tostring(text or "")
 	maxWidth = math.max(tonumber(maxWidth) or 0, 0)
 	surface.SetFont(font)
@@ -257,6 +307,56 @@ local function fitText(text, font, maxWidth)
 
 	return string.TrimRight(text:sub(1, low)) .. suffix
 end
+
+-- A static, fullbright model panel used only by the join flow. It deliberately avoids
+-- the directional Helix lighting that can turn some Workshop clone materials into a
+-- black silhouette in DModelPanel, and it disables projected entity shadows entirely.
+DEFINE_BASECLASS("ixModelPanel")
+local JOIN_MODEL = {}
+
+function JOIN_MODEL:Init()
+	BaseClass.Init(self)
+	self:SetMouseInputEnabled(false)
+	self:SetKeyboardInputEnabled(false)
+	self.modelAngle = Angle(0, 35, 0)
+end
+
+function JOIN_MODEL:SetModel(model, skin, bodygroups)
+	BaseClass.SetModel(self, model, skin, bodygroups)
+
+	if (IsValid(self.Entity)) then
+		self.Entity:DrawShadow(false)
+		self.Entity:SetNoDraw(true)
+		self.Entity:SetIK(false)
+		self.Entity:SetRenderMode(RENDERMODE_NORMAL)
+		self.Entity:SetColor(color_white)
+	end
+end
+
+function JOIN_MODEL:LayoutEntity(entity)
+	if (!IsValid(entity)) then return end
+	entity:SetAngles(self.modelAngle or angle_zero)
+	entity:SetIK(false)
+	entity:SetPoseParameter("head_pitch", 0)
+	entity:SetPoseParameter("head_yaw", 0)
+	self:RunAnimation()
+end
+
+function JOIN_MODEL:DrawModel()
+	if (!IsValid(self.Entity)) then return end
+
+	render.SetStencilEnable(false)
+	render.MaterialOverride(nil)
+	render.SetBlend(1)
+	render.SetColorModulation(1, 1, 1)
+	render.SuppressEngineLighting(true)
+	self.Entity:DrawModel()
+	render.SuppressEngineLighting(false)
+	render.SetColorModulation(1, 1, 1)
+	render.SetBlend(1)
+end
+
+vgui.Register("swrpJoinModelPanel", JOIN_MODEL, "ixModelPanel")
 
 local function getDeploymentName()
 	local map = tostring(game.GetMap() or "UNKNOWN SECTOR")
@@ -325,21 +425,22 @@ local function frameModelPanel(panel, padding)
 
 	padding = tonumber(padding) or 1.18
 	local mins, maxs = panel.Entity:GetRenderBounds()
-	local modelHeight = math.max(maxs.z - mins.z, 1)
-	local modelWidth = math.max(maxs.x - mins.x, maxs.y - mins.y, 1) * 1.42
-	local lookAt = Vector(0, 0, mins.z + modelHeight * 0.5)
-	local fov = 31
+	local size = maxs - mins
+	local centre = (mins + maxs) * 0.5
+	local modelHeight = math.max(size.z, 1)
+	local modelWidth = math.max(size.x, size.y, 1)
+	local fov = 34
 	local verticalFOV = math.rad(fov)
 	local aspect = math.max(panel:GetWide() / math.max(panel:GetTall(), 1), 0.2)
 	local horizontalFOV = 2 * math.atan(math.tan(verticalFOV * 0.5) * aspect)
 	local verticalDistance = (modelHeight * 0.5) / math.tan(verticalFOV * 0.5)
-	local horizontalDistance = (modelWidth * 0.5) / math.tan(horizontalFOV * 0.5)
-	local distance = math.max(verticalDistance, horizontalDistance, 86) * padding
+	local horizontalDistance = (modelWidth * 0.72) / math.tan(horizontalFOV * 0.5)
+	local distance = math.max(verticalDistance, horizontalDistance, 92) * padding
+	local lookAt = centre + Vector(0, 0, modelHeight * 0.015)
 
 	panel:SetFOV(fov)
 	panel:SetLookAt(lookAt)
-	panel:SetCamPos(Vector(distance, 0, lookAt.z))
-	panel.brightness = 1.15
+	panel:SetCamPos(lookAt + Vector(distance, 0, modelHeight * 0.025))
 end
 
 local function applyCharacterModel(panel, character)
@@ -347,26 +448,31 @@ local function applyCharacterModel(panel, character)
 		return
 	end
 
-	panel:SetModel(character:GetModel())
-	panel:SetSkin(character:GetData("skin", 0))
+	local model = character:GetModel()
+	if (istable(model)) then model = model[1] end
+	panel:SetModel(model)
+	panel:SetSkin(math.max(tonumber(character:GetData("skin", 0)) or 0, 0))
 
 	local entity = panel.Entity
+	if (!IsValid(entity)) then return end
 
-	if (!IsValid(entity)) then
-		return
-	end
+	entity:DrawShadow(false)
+	entity:SetNoDraw(true)
+	entity:SetIK(false)
+	entity:SetRenderMode(RENDERMODE_NORMAL)
+	entity:SetColor(color_white)
 
+	-- Old records can retain bodygroup indices from a previous placeholder model.
+	-- Applying those indices to the clone model removes armour sections and looks like
+	-- a second black model. The service-record preview therefore uses the model's safe
+	-- default bodygroups; the player's real in-world bodygroups are not changed.
 	for i = 0, entity:GetNumBodyGroups() - 1 do
 		entity:SetBodygroup(i, 0)
 	end
 
-	for group, value in pairs(character:GetData("groups", {}) or {}) do
-		entity:SetBodygroup(tonumber(group) or 0, tonumber(value) or 0)
-	end
-
 	timer.Simple(0, function()
 		if (IsValid(panel)) then
-			frameModelPanel(panel, 1.22)
+			frameModelPanel(panel, 1.34)
 		end
 	end)
 end
@@ -661,22 +767,95 @@ function MAIN:Init()
 
 	self.heroFrame = self:Add("Panel")
 	self.heroFrame.Paint = function(panel, width, height)
-		surface.SetDrawColor(Color(5, 11, 20, 126))
+		local now = RealTime()
+		local pulse = (math.sin(now * 2.1) + 1) * 0.5
+		local pad = math.Clamp(width * 0.052, 28, 46)
+		local lowerBandHeight = math.Clamp(height * 0.24, 116, 146)
+		local lowerBandY = height - lowerBandHeight - 24
+
+		surface.SetDrawColor(Color(5, 11, 20, 184))
 		surface.DrawRect(0, 0, width, height)
 		surface.SetDrawColor(UI.line)
 		surface.DrawOutlinedRect(0, 0, width, height, 1)
 		drawCorners(0, 0, width, height, UI.blueSoft, 28, 2)
-		draw.SimpleText("GRAND ARMY PERSONNEL INTERFACE", "SWRPJoinMicro", 20, 18, UI.muted, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-		draw.SimpleText("IDENTITY", "SWRPJoinHeading", 22, height - 98, UI.white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-		draw.SimpleText("PROGRESSION", "SWRPJoinHeading", 170, height - 98, UI.white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-		draw.SimpleText("DEPLOYMENT", "SWRPJoinHeading", 348, height - 98, UI.white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-		draw.SimpleText("One record. One doctrine. A career earned in service.", "SWRPJoinSmall", 22, height - 58, UI.text, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-	end
 
-	self.heroModel = self.heroFrame:Add("ixModelPanel")
-	self.heroModel:SetModel("models/error.mdl")
-	self.heroModel:SetFOV(46)
-	self.heroModel:SetMouseInputEnabled(false)
+		-- Subtle moving scan across the central command display.
+		local scanX = ((now * 72) % (width + 180)) - 180
+		surface.SetDrawColor(UI.blue.r, UI.blue.g, UI.blue.b, 10)
+		surface.DrawRect(scanX, 1, 120, math.max(lowerBandY - 2, 0))
+
+		draw.SimpleText("GRAND ARMY PERSONNEL COMMAND", "SWRPJoinMicro", pad, 24, UI.muted, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+		draw.SimpleText("YOUR SERVICE", "SWRPJoinHero", pad, 67, UI.white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+		draw.SimpleText("STARTS HERE", "SWRPJoinHero", pad, 108, UI.blue, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+		drawWrappedText(
+			"Create your clone, choose how they will develop and earn a place in the Grand Army through service.",
+			"SWRPJoinBody",
+			pad,
+			164,
+			UI.text,
+			math.max(width * 0.49, 280),
+			22
+		)
+
+		local statusY = math.min(242, lowerBandY - 64)
+		surface.SetDrawColor(Color(UI.success.r, UI.success.g, UI.success.b, 18 + pulse * 12))
+		surface.DrawRect(pad, statusY, 250, 34)
+		surface.SetDrawColor(UI.success.r, UI.success.g, UI.success.b, 150)
+		surface.DrawOutlinedRect(pad, statusY, 250, 34, 1)
+		surface.DrawRect(pad + 12, statusY + 15, 5, 5)
+		draw.SimpleText("NEW PERSONNEL INTAKE // ACTIVE", "SWRPJoinMicro", pad + 28, statusY + 17, UI.success, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+
+		-- Animated holographic personnel seal. This gives the home screen a focal point
+		-- without introducing another character model or Workshop dependency.
+		local sealX = width * 0.73
+		local sealY = math.min(height * 0.39, lowerBandY * 0.50)
+		local sealRadius = math.Clamp(math.min(width * 0.16, height * 0.22), 74, 138)
+		local ringColour = Color(UI.blue.r, UI.blue.g, UI.blue.b, 45)
+		local brightRing = Color(UI.blue.r, UI.blue.g, UI.blue.b, 105 + pulse * 35)
+		local greenRing = Color(UI.success.r, UI.success.g, UI.success.b, 75)
+
+		for radiusStep = 0, 3 do
+			surface.DrawCircle(sealX, sealY, sealRadius - radiusStep * 20, ringColour.r, ringColour.g, ringColour.b, ringColour.a)
+		end
+		drawRadialTicks(sealX, sealY, sealRadius + 5, sealRadius + 15, 28, now * 4, brightRing)
+		drawArc(sealX, sealY, sealRadius + 2, now * 22, now * 22 + 92, brightRing, 34, 2)
+		drawArc(sealX, sealY, sealRadius - 25, 205 - now * 17, 308 - now * 17, greenRing, 30, 1)
+		drawArc(sealX, sealY, sealRadius - 48, now * 28, now * 28 + 74, Color(255, 255, 255, 65), 24, 1)
+
+		surface.SetDrawColor(UI.blue.r, UI.blue.g, UI.blue.b, 40)
+		surface.DrawLine(sealX - sealRadius - 42, sealY, sealX + sealRadius + 42, sealY)
+		surface.DrawLine(sealX, sealY - sealRadius - 30, sealX, sealY + sealRadius + 30)
+		draw.SimpleText("GAR", "SWRPJoinHero", sealX, sealY - 18, UI.white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+		draw.SimpleText("PERSONNEL COMMAND", "SWRPJoinMicro", sealX, sealY + 20, UI.blue, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+		draw.SimpleText("ENLISTMENT PROTOCOL 01", "SWRPJoinMicro", sealX, sealY + sealRadius + 27, UI.muted, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+
+		-- Three-stage service path.
+		local cardGap = 12
+		local cardWidth = (width - pad * 2 - cardGap * 2) / 3
+		local cardHeight = lowerBandHeight - 28
+		local cardY = lowerBandY + 14
+		local stages = {
+			{"01", "IDENTITY", "Designation and callsign", UI.blue},
+			{"02", "DOCTRINE", "Choose your XP advantage", UI.success},
+			{"03", "SERVICE", "Earn roles and qualifications", UI.blue}
+		}
+
+		surface.SetDrawColor(UI.line)
+		surface.DrawRect(pad, lowerBandY, width - pad * 2, 1)
+
+		for index, stage in ipairs(stages) do
+			local x = pad + (index - 1) * (cardWidth + cardGap)
+			local colour = stage[4]
+			surface.SetDrawColor(Color(7, 14, 24, 238))
+			surface.DrawRect(x, cardY, cardWidth, cardHeight)
+			surface.SetDrawColor(colour.r, colour.g, colour.b, index == 1 and 190 or 100)
+			surface.DrawOutlinedRect(x, cardY, cardWidth, cardHeight, 1)
+			surface.DrawRect(x, cardY, 3, cardHeight)
+			draw.SimpleText(stage[1], "SWRPJoinMicro", x + 16, cardY + 13, colour, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+			draw.SimpleText(stage[2], "SWRPJoinHeading", x + 16, cardY + 36, UI.white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+			draw.SimpleText(fitText(stage[3], "SWRPJoinSmall", cardWidth - 32), "SWRPJoinSmall", x + 16, cardY + cardHeight - 18, UI.text, TEXT_ALIGN_LEFT, TEXT_ALIGN_BOTTOM)
+		end
+	end
 
 	self.intel = self:Add("Panel")
 	self.intel.Paint = function(panel, width, height)
@@ -723,17 +902,6 @@ function MAIN:Init()
 		draw.SimpleText("PERSONNEL ONLINE", "SWRPJoinMicro", width - 18, height - 18, UI.muted, TEXT_ALIGN_RIGHT, TEXT_ALIGN_BOTTOM)
 	end
 
-	timer.Simple(0, function()
-		if (!IsValid(self) or !IsValid(self.heroModel)) then return end
-		local faction = getCloneFaction()
-		local model = getFactionModel(faction)
-		self.heroModel:SetModel(model)
-		timer.Simple(0, function()
-			if (IsValid(self) and IsValid(self.heroModel)) then
-				frameModelPanel(self.heroModel, 1.12)
-			end
-		end)
-	end)
 end
 
 function MAIN:UpdateReturnButton(value)
@@ -794,18 +962,12 @@ function MAIN:PerformLayout(width, height)
 
 	self.heroFrame:SetPos(heroX, menuY)
 	self.heroFrame:SetSize(heroWidth, contentBottom - menuY)
-	self.heroModel:SetPos(8, 34)
-	self.heroModel:SetSize(heroWidth - 16, self.heroFrame:GetTall() - 142)
 
 	self.intel:SetPos(width - margin - intelWidth, menuY)
 	self.intel:SetSize(intelWidth, math.min(contentBottom - menuY, 430))
 
 	self.operation:SetPos(heroX, height - margin - bottomHeight)
 	self.operation:SetSize(width - heroX - margin, bottomHeight)
-
-	if (IsValid(self.heroModel.Entity)) then
-		frameModelPanel(self.heroModel, 1.12)
-	end
 end
 
 function MAIN:Paint(width, height)
@@ -953,7 +1115,7 @@ function CREATOR:Init()
 		draw.SimpleText(self:GetDisplayName():upper(), "SWRPJoinHeading", 20, height - 52, UI.white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 	end
 
-	self.identityModel = self.identityModelFrame:Add("ixModelPanel")
+	self.identityModel = self.identityModelFrame:Add("swrpJoinModelPanel")
 	self.identityModel:SetModel("models/error.mdl")
 	self.identityModel:SetFOV(48)
 	self.identityModel:SetMouseInputEnabled(false)
@@ -1086,6 +1248,58 @@ function CREATOR:Init()
 			self.aptitudeCards[#self.aptitudeCards + 1] = makeAptitudeCard(self.aptitudeGrid, aptitude, function(id) self:SelectAptitude(id) end)
 		end
 	end
+	self.attributePreview = self.aptitude:Add("Panel")
+	self.attributePreview.values = {
+		stamina = 0,
+		endurance = 0,
+		strength = 0
+	}
+	self.attributePreview.Paint = function(panel, width, height)
+		local aptitude = SWRP.GetStartingAptitude(self.selectedAptitude)
+		local selectedAttribute = aptitude and aptitude.attribute or ""
+		local rows = {
+			{"stamina", "STAMINA", Color(87, 190, 224)},
+			{"endurance", "ENDURANCE", Color(92, 205, 176)},
+			{"strength", "STRENGTH", Color(218, 162, 91)}
+		}
+
+		surface.SetDrawColor(Color(5, 11, 20, 238))
+		surface.DrawRect(0, 0, width, height)
+		surface.SetDrawColor(UI.line)
+		surface.DrawOutlinedRect(0, 0, width, height, 1)
+		drawCorners(0, 0, width, height, UI.blueSoft, 16, 2)
+		draw.SimpleText("STARTING ATTRIBUTE PREVIEW", "SWRPJoinMicro", 18, 13, UI.muted, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+		draw.SimpleText("The selected aptitude adds 10 points when this record is created.", "SWRPJoinSmall", width - 18, 13, UI.text, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+
+		local labelWidth = 112
+		local valueWidth = 70
+		local barX = 18 + labelWidth
+		local barWidth = math.max(width - barX - valueWidth - 22, 80)
+		local rowY = 42
+		local rowGap = 29
+		local lerpAmount = math.Clamp(FrameTime() * 10, 0, 1)
+
+		for index, row in ipairs(rows) do
+			local id, title, colour = row[1], row[2], row[3]
+			local definition = ix.attributes and ix.attributes.list and ix.attributes.list[id]
+			local configuredMaximum = tonumber(ix.config.Get("maxAttributes", 100)) or 100
+			local maximum = math.max(tonumber(definition and definition.maxValue) or configuredMaximum, 10)
+			local target = selectedAttribute == id and math.min(10, maximum) or 0
+			panel.values[id] = Lerp(lerpAmount, panel.values[id] or 0, target)
+			local value = panel.values[id]
+			local y = rowY + (index - 1) * rowGap
+
+			draw.SimpleText(title, "SWRPJoinSmall", 18, y, selectedAttribute == id and colour or UI.text, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+			surface.SetDrawColor(Color(255, 255, 255, 16))
+			surface.DrawRect(barX, y - 5, barWidth, 10)
+			surface.SetDrawColor(colour.r, colour.g, colour.b, selectedAttribute == id and 235 or 105)
+			surface.DrawRect(barX, y - 5, barWidth * math.Clamp(value / maximum, 0, 1), 10)
+			surface.SetDrawColor(colour.r, colour.g, colour.b, 80)
+			surface.DrawOutlinedRect(barX, y - 5, barWidth, 10, 1)
+			draw.SimpleText(string.format("%d / %d", math.Round(value), maximum), "SWRPJoinSmall", width - 18, y, selectedAttribute == id and colour or UI.muted, TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+		end
+	end
+
 	self.confirmation = self.aptitude:Add("Panel")
 	self.confirmation.Paint = function(panel, width, height)
 		local path = SWRP.GetCareerPath(self.selectedPath)
@@ -1105,7 +1319,7 @@ function CREATOR:Init()
 		draw.SimpleText("All specialist roles must still be earned in service.", "SWRPJoinSmall", 20, height - 18, UI.text, TEXT_ALIGN_LEFT, TEXT_ALIGN_BOTTOM)
 	end
 
-	self.backButton = makeButton(self, "RETURN", "Return to the Republic personnel network.", function()
+	self.backButton = makeButton(self, "RETURN", "", function()
 		self:PreviousStep()
 	end, "back")
 	self.nextButton = makeButton(self, "CONTINUE", "Choose a development doctrine.", function()
@@ -1240,17 +1454,17 @@ function CREATOR:SetStep(step)
 	self.stepLabel:SetText(labels[self.currentStep])
 	if (self.currentStep == 1) then
 		self.backButton.title = "RETURN"
-		self.backButton.subtitle = "Return to the Republic personnel network."
+		self.backButton.subtitle = ""
 		self.nextButton.title = "CONTINUE"
 		self.nextButton.subtitle = "Choose a development doctrine."
 	elseif (self.currentStep == 2) then
 		self.backButton.title = "BACK"
-		self.backButton.subtitle = "Return to clone identification."
+		self.backButton.subtitle = ""
 		self.nextButton.title = "CONTINUE"
 		self.nextButton.subtitle = "Choose a starting physical aptitude."
 	else
 		self.backButton.title = "BACK"
-		self.backButton.subtitle = "Return to doctrine selection."
+		self.backButton.subtitle = ""
 		self.nextButton.title = "CREATE RECORD"
 		self.nextButton.subtitle = "Register this clone and deploy."
 	end
@@ -1296,7 +1510,7 @@ function CREATOR:ResetForm()
 	self.identityModel:SetModel(model)
 	timer.Simple(0, function()
 		if (IsValid(self) and IsValid(self.identityModel)) then
-			frameModelPanel(self.identityModel, 1.24)
+			frameModelPanel(self.identityModel, 1.05)
 		end
 	end)
 end
@@ -1430,15 +1644,15 @@ function CREATOR:PerformLayout(width, height)
 	end
 
 	-- Conditioning uses only the space it needs; the old version left half the screen empty.
-	local aptitudeHeight = math.min(availableHeight - 24, 600)
+	local aptitudeHeight = math.min(availableHeight - 24, 650)
 	local aptitudeY = contentY + math.max((availableHeight - aptitudeHeight) * 0.5, 0)
 	self.aptitude:SetPos(pageX, aptitudeY)
 	self.aptitude:SetSize(pageWidth, aptitudeHeight)
-	local introHeight = 112
+	local introHeight = 120
 	self.aptitudeIntro:SetPos(0, 0)
 	self.aptitudeIntro:SetSize(pageWidth, introHeight)
 	self.aptitudeGrid:SetPos(0, introHeight + 12)
-	local gridHeight = math.Clamp(aptitudeHeight * 0.40, 210, 240)
+	local gridHeight = math.Clamp(aptitudeHeight * 0.31, 180, 205)
 	self.aptitudeGrid:SetSize(pageWidth, gridHeight)
 	local aptitudeGap = 12
 	local aptitudeWidth = (pageWidth - aptitudeGap * 2) / 3
@@ -1446,7 +1660,11 @@ function CREATOR:PerformLayout(width, height)
 		card:SetPos((index - 1) * (aptitudeWidth + aptitudeGap), 0)
 		card:SetSize(aptitudeWidth, gridHeight)
 	end
-	local confirmY = introHeight + 12 + gridHeight + 12
+	local attributeY = introHeight + 12 + gridHeight + 12
+	local attributeHeight = 132
+	self.attributePreview:SetPos(0, attributeY)
+	self.attributePreview:SetSize(pageWidth, attributeHeight)
+	local confirmY = attributeY + attributeHeight + 12
 	self.confirmation:SetPos(0, confirmY)
 	self.confirmation:SetSize(pageWidth, aptitudeHeight - confirmY)
 
@@ -1456,7 +1674,7 @@ function CREATOR:PerformLayout(width, height)
 	self.nextButton:SetPos(pageX + pageWidth - self.nextButton:GetWide(), height - footerHeight + 9)
 
 	if (IsValid(self.identityModel.Entity)) then
-		frameModelPanel(self.identityModel, 1.24)
+		frameModelPanel(self.identityModel, 1.05)
 	end
 end
 function CREATOR:Paint(width, height)
@@ -1504,7 +1722,7 @@ function LOAD:Init()
 		drawCorners(0, 0, width, height, UI.blueSoft, 18, 2)
 	end
 
-	self.model = self.modelFrame:Add("ixModelPanel")
+	self.model = self.modelFrame:Add("swrpJoinModelPanel")
 	self.model:SetModel("models/error.mdl")
 	self.model:SetFOV(50)
 
@@ -1584,19 +1802,19 @@ function LOAD:Init()
 		surface.SetDrawColor(colour)
 		surface.DrawRect(22, y + 19, (width - 44) * progress, 9)
 	end
-	self.backButton = makeButton(self, "RETURN", "Return to the Republic personnel network.", function()
+	self.backButton = makeButton(self, "RETURN", "", function()
 		self:SlideDown()
 		parent.mainPanel:Undim()
 	end, "back")
 
-	self.deleteButton = makeButton(self, "DELETE RECORD", "Permanently remove the selected character.", function()
+	self.deleteButton = makeButton(self, "DELETE RECORD", "Permanently delete this record.", function()
 		if (self.character) then
 			self.deleteOverlay:SetVisible(true)
 			self.deleteOverlay:MoveToFront()
 		end
 	end, "back")
 
-	self.deployButton = makeButton(self, "DEPLOY", "Load the selected character and enter the server.", function()
+	self.deployButton = makeButton(self, "DEPLOY", "Enter the server as this character.", function()
 		if (!self.character) then
 			return
 		end
@@ -1788,7 +2006,7 @@ function LOAD:PerformLayout(width, height)
 	self.confirmDelete:SetSize(230, 44)
 
 	if (IsValid(self.model.Entity)) then
-		frameModelPanel(self.model, 1.25)
+		frameModelPanel(self.model, 1.34)
 	end
 end
 function LOAD:Paint(width, height)

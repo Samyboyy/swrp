@@ -23,19 +23,56 @@ REG.recruitmentStates = {
 	}
 }
 
-REG.rankWeights = {
-	CC = 100,
-	GEN = 95,
-	COL = 90,
-	MAJ = 80,
-	CPT = 70,
-	LT = 60,
-	SGT = 50,
-	CPL = 40,
-	SCT = 30,
-	PVT = 20,
-	CT = 10,
-	CR = 5
+REG.rankOrder = {
+	"RCT",
+	"PVT",
+	"PFC",
+	"LCPL",
+	"CPL",
+	"SGT",
+	"SSGT",
+	"MSGT",
+	"2LT",
+	"1LT",
+	"CPT",
+	"MJR",
+	"LCOL",
+	"COL",
+	"GRL"
+}
+
+REG.rankNames = {
+	RCT = "Recruit",
+	PVT = "Private",
+	PFC = "Private First Class",
+	LCPL = "Lance Corporal",
+	CPL = "Corporal",
+	SGT = "Sergeant",
+	SSGT = "Staff Sergeant",
+	MSGT = "Master Sergeant",
+	["2LT"] = "2nd Lieutenant",
+	["1LT"] = "1st Lieutenant",
+	CPT = "Captain",
+	MJR = "Major",
+	LCOL = "Lieutenant Colonel",
+	COL = "Colonel",
+	GRL = "General"
+}
+
+REG.rankWeights = {}
+for index, abbreviation in ipairs(REG.rankOrder) do
+	REG.rankWeights[abbreviation] = index * 10
+end
+
+-- Legacy values from the earliest prototype are migrated into the final rank set.
+REG.rankAliases = {
+	CT = "RCT",
+	CR = "RCT",
+	GEN = "GRL",
+	MAJ = "MJR",
+	LT = "2LT",
+	["2NDLT"] = "2LT",
+	["1STLT"] = "1LT"
 }
 
 
@@ -51,10 +88,10 @@ REG.ownerSteamIDs = REG.ownerSteamIDs or {
 -- 1 = training/record assistance, 2 = personnel management, 3 = full regiment control.
 REG.managementBillets = REG.managementBillets or {
     marshal_commander = {level = 3, minimumRank = "CPT"},
-    high_command_adjutant = {level = 3, minimumRank = "LT"},
-    commanding_officer = {level = 3, minimumRank = "LT"},
-    executive_officer = {level = 3, minimumRank = "LT"},
-    naval_commanding_officer = {level = 3, minimumRank = "LT"},
+    high_command_adjutant = {level = 3, minimumRank = "2LT"},
+    commanding_officer = {level = 3, minimumRank = "2LT"},
+    executive_officer = {level = 3, minimumRank = "2LT"},
+    naval_commanding_officer = {level = 3, minimumRank = "2LT"},
     company_commander = {level = 3, minimumRank = "SGT"},
     company_executive = {level = 2, minimumRank = "SGT"},
     senior_nco = {level = 2, minimumRank = "SGT"},
@@ -95,6 +132,29 @@ function REG.Register(id, data)
 	data.aliases = data.aliases or {}
 	data.tagline = data.tagline or data.description
 	data.browseVisible = data.browseVisible ~= false
+	data.unitTypes = istable(data.unitTypes) and data.unitTypes or {}
+	data.unitTypeLookup = {}
+
+	for index, unitType in ipairs(data.unitTypes) do
+		if (istable(unitType)) then
+			local unitTypeID = normaliseID(unitType.id or unitType.name)
+
+			if (unitTypeID ~= "") then
+				unitType.id = unitTypeID
+				unitType.name = unitType.name or unitTypeID
+				unitType.description = unitType.description or ""
+				unitType.aliases = istable(unitType.aliases) and unitType.aliases or {}
+				data.unitTypeLookup[unitTypeID] = unitType
+				data.unitTypes[index] = unitType
+			end
+		end
+	end
+
+	data.defaultUnitType = normaliseID(data.defaultUnitType or (data.unitTypes[1] and data.unitTypes[1].id) or "")
+
+	if (data.defaultUnitType == "" or not data.unitTypeLookup[data.defaultUnitType]) then
+		data.defaultUnitType = data.unitTypes[1] and data.unitTypes[1].id or ""
+	end
 
 	REG.nodes[id] = data
 	REG.order[#REG.order + 1] = id
@@ -189,9 +249,109 @@ function REG.IsDescendant(nodeID, parentID)
 	return false
 end
 
-function REG.GetRankWeight(rank)
+function REG.NormalizeRank(rank)
 	local clean = string.upper(string.Trim(tostring(rank or "")))
-	return REG.rankWeights[clean] or 0
+	clean = REG.rankAliases[clean] or clean
+
+	if (REG.rankWeights[clean]) then
+		return clean
+	end
+
+	return nil
+end
+
+function REG.IsValidRank(rank)
+	return REG.NormalizeRank(rank) ~= nil
+end
+
+function REG.GetRankWeight(rank)
+	local clean = REG.NormalizeRank(rank)
+	return clean and REG.rankWeights[clean] or 0
+end
+
+function REG.GetRankName(rank)
+	local clean = REG.NormalizeRank(rank)
+	return clean and REG.rankNames[clean] or "Unknown Rank"
+end
+
+function REG.GetRegimentPrefix(regimentID)
+	local primaryID = REG.GetPrimaryRegiment(regimentID)
+	local node = REG.Get(primaryID)
+	return node and node.namePrefix or "CT"
+end
+
+function REG.GetUnitTypes(regimentID)
+	local primaryID = REG.GetPrimaryRegiment(regimentID)
+	local node = REG.Get(primaryID)
+	return node and node.unitTypes or {}
+end
+
+function REG.GetUnitType(regimentID, unitTypeID)
+	local primaryID = REG.GetPrimaryRegiment(regimentID)
+	local node = REG.Get(primaryID)
+
+	if (not node) then
+		return nil
+	end
+
+	local wanted = normaliseID(unitTypeID)
+
+	if (wanted ~= "" and node.unitTypeLookup and node.unitTypeLookup[wanted]) then
+		return node.unitTypeLookup[wanted]
+	end
+
+	for _, unitType in ipairs(node.unitTypes or {}) do
+		if (normaliseID(unitType.name) == wanted) then
+			return unitType
+		end
+
+		for _, alias in ipairs(unitType.aliases or {}) do
+			if (normaliseID(alias) == wanted) then
+				return unitType
+			end
+		end
+	end
+
+	return nil
+end
+
+function REG.GetDefaultUnitType(regimentID)
+	local primaryID = REG.GetPrimaryRegiment(regimentID)
+	local node = REG.Get(primaryID)
+	return node and node.defaultUnitType or ""
+end
+
+function REG.ResolveUnitType(regimentID, unitTypeID)
+	local unitType = REG.GetUnitType(regimentID, unitTypeID)
+
+	if (unitType) then
+		return unitType.id
+	end
+
+	return REG.GetDefaultUnitType(regimentID)
+end
+
+function REG.GetUnitTypeName(regimentID, unitTypeID)
+	local unitType = REG.GetUnitType(regimentID, unitTypeID)
+	return unitType and unitType.name or "Standard Personnel"
+end
+
+function REG.FormatServiceName(regimentID, rank, cloneNumber, callsign)
+	local prefix = REG.GetRegimentPrefix(regimentID)
+	local cleanRank = REG.NormalizeRank(rank) or "RCT"
+	local cleanNumber = tostring(cloneNumber or ""):gsub("%D", ""):sub(1, 4)
+	local cleanCallsign = string.Trim(tostring(callsign or "")):gsub("[%c]", " "):sub(1, 24)
+	local parts = {prefix, cleanRank}
+
+	if (cleanNumber ~= "") then
+		parts[#parts + 1] = cleanNumber
+	end
+
+	if (cleanCallsign ~= "") then
+		parts[#parts + 1] = cleanCallsign
+	end
+
+	return table.concat(parts, " ")
 end
 
 function REG.DecodeList(value)
@@ -214,6 +374,7 @@ end
 REG.Register("gar", {
 	name = "Grand Army of the Republic",
 	shortName = "GAR",
+	namePrefix = "GAR",
 	kind = "root",
 	browseVisible = false,
 	colour = Color(94, 186, 232),
@@ -227,6 +388,7 @@ REG.Register("high_command", {
 	name = "High Command",
 	browseVisible = false,
 	shortName = "HIGHCOM",
+	namePrefix = "GAR",
 	kind = "command",
 	parent = "gar",
 	colour = Color(211, 174, 75),
@@ -234,6 +396,10 @@ REG.Register("high_command", {
 	specialisations = {"Strategic planning", "Operational command", "Inter-regimental coordination"},
 	requirements = {"Commissioned command appointment", "High Command authorisation"},
 	defaultRecruitment = "closed",
+	defaultUnitType = "command",
+	unitTypes = {
+		{id = "command", name = "High Command", description = "Grand Army High Command personnel model.", aliases = {"officer"}}
+	},
 	commandPositions = {
 		{id = "marshal_commander", title = "Marshal Commander"},
 		{id = "high_command_adjutant", title = "High Command Adjutant"}
@@ -244,19 +410,25 @@ REG.Register("unassigned", {
 	name = "Unassigned Personnel",
 	browseVisible = false,
 	shortName = "UNASSIGNED",
+	namePrefix = "CT",
 	kind = "regiment",
 	parent = "gar",
 	colour = Color(145, 158, 171),
 	description = "Clone personnel who have completed initial processing but have not yet received a permanent regimental assignment.",
 	specialisations = {"Basic combat duties", "Training support"},
 	requirements = {"Complete basic training", "Await a regiment tryout or transfer"},
-	defaultRecruitment = "closed"
+	defaultRecruitment = "closed",
+	defaultUnitType = "clone_trooper",
+	unitTypes = {
+		{id = "clone_trooper", name = "Clone Trooper", description = "Standard unassigned clone armour.", aliases = {"ct", "trooper"}}
+	}
 })
 
 REG.Register("501st", {
 	name = "501st Legion",
 	tagline = "Fast, aggressive frontline infantry.",
 	shortName = "501ST",
+	namePrefix = "501st",
 	kind = "regiment",
 	parent = "gar",
 	colour = Color(63, 116, 214),
@@ -265,6 +437,13 @@ REG.Register("501st", {
 	specialisations = {"Frontline assault", "Boarding operations", "Urban combat", "Rapid deployment"},
 	requirements = {"Basic training completed", "No active disciplinary restriction", "Pass a 501st tryout"},
 	defaultRecruitment = "open",
+	defaultUnitType = "trooper",
+	unitTypes = {
+		{id = "trooper", name = "Standard Trooper", description = "The default 501st infantry model.", aliases = {"infantry", "standard"}},
+		{id = "heavy", name = "Heavy", description = "Heavy weapons specialist model."},
+		{id = "medic", name = "Medic", description = "Combat medical specialist model.", aliases = {"medical"}},
+		{id = "command", name = "Command", description = "501st command personnel model.", aliases = {"officer"}}
+	},
 	commandPositions = {
 		{id = "commanding_officer", title = "Commanding Officer"},
 		{id = "executive_officer", title = "Executive Officer"},
@@ -277,6 +456,7 @@ REG.Register("501st", {
 
 REG.Register("501st_command", {
 	name = "Legion Command",
+	unitType = "command",
 	shortName = "COMMAND",
 	kind = "unit",
 	parent = "501st",
@@ -312,6 +492,8 @@ REG.Register("torrent_company", {
 
 REG.Register("501st_medical", {
 	name = "501st Medical Personnel",
+	unitType = "medic",
+	filterByUnitType = true,
 	shortName = "MEDICAL",
 	kind = "unit",
 	parent = "501st",
@@ -327,6 +509,8 @@ REG.Register("501st_medical", {
 
 REG.Register("501st_heavy", {
 	name = "501st Heavy Personnel",
+	unitType = "heavy",
+	filterByUnitType = true,
 	shortName = "HEAVY",
 	kind = "unit",
 	parent = "501st",
@@ -341,6 +525,7 @@ REG.Register("212th", {
 	name = "212th Attack Battalion",
 	tagline = "Disciplined combined-arms assault troops.",
 	shortName = "212TH",
+	namePrefix = "212th",
 	kind = "regiment",
 	parent = "gar",
 	colour = Color(226, 141, 47),
@@ -349,6 +534,14 @@ REG.Register("212th", {
 	specialisations = {"Combined-arms assault", "Defensive operations", "Siege warfare", "Reconnaissance"},
 	requirements = {"Basic training completed", "No active disciplinary restriction", "Pass a 212th tryout"},
 	defaultRecruitment = "open",
+	defaultUnitType = "trooper",
+	unitTypes = {
+		{id = "trooper", name = "Standard Trooper", description = "The default 212th infantry model.", aliases = {"infantry", "standard"}},
+		{id = "heavy", name = "Heavy", description = "Heavy weapons specialist model."},
+		{id = "medic", name = "Medic", description = "Combat medical specialist model.", aliases = {"medical"}},
+		{id = "recon", name = "Recon", description = "Reconnaissance and rapid-response specialist model.", aliases = {"scout"}},
+		{id = "command", name = "Command", description = "212th command personnel model.", aliases = {"officer"}}
+	},
 	commandPositions = {
 		{id = "commanding_officer", title = "Commanding Officer"},
 		{id = "executive_officer", title = "Executive Officer"},
@@ -361,6 +554,7 @@ REG.Register("212th", {
 
 REG.Register("212th_command", {
 	name = "Battalion Command",
+	unitType = "command",
 	shortName = "COMMAND",
 	kind = "unit",
 	parent = "212th",
@@ -377,6 +571,7 @@ REG.Register("212th_command", {
 
 REG.Register("ghost_company", {
 	name = "Ghost Company",
+	unitType = "recon",
 	shortName = "GHOST",
 	kind = "unit",
 	parent = "212th",
@@ -393,6 +588,8 @@ REG.Register("ghost_company", {
 
 REG.Register("212th_medical", {
 	name = "212th Medical Personnel",
+	unitType = "medic",
+	filterByUnitType = true,
 	shortName = "MEDICAL",
 	kind = "unit",
 	parent = "212th",
@@ -410,6 +607,7 @@ REG.Register("republic_navy", {
 	name = "Republic Navy",
 	tagline = "Fleet, engineering and flight operations.",
 	shortName = "NAVY",
+	namePrefix = "Navy",
 	kind = "regiment",
 	parent = "gar",
 	colour = Color(92, 177, 194),
@@ -418,6 +616,13 @@ REG.Register("republic_navy", {
 	specialisations = {"Fleet operations", "Navigation", "Engineering", "Aviation"},
 	requirements = {"Naval assignment", "Role-specific qualification"},
 	defaultRecruitment = "selective",
+	defaultUnitType = "crew",
+	unitTypes = {
+		{id = "crew", name = "Naval Crew", description = "Standard Republic Navy personnel model.", aliases = {"crewman", "standard"}},
+		{id = "aviation", name = "Aviation", description = "Pilot and flight operations model.", aliases = {"pilot"}},
+		{id = "engineering", name = "Engineering", description = "Naval engineering personnel model.", aliases = {"engineer"}},
+		{id = "command", name = "Command", description = "Republic Navy command personnel model.", aliases = {"officer"}}
+	},
 	commandPositions = {
 		{id = "naval_commanding_officer", title = "Naval Commanding Officer"},
 		{id = "executive_officer", title = "Executive Officer"}
@@ -426,6 +631,7 @@ REG.Register("republic_navy", {
 
 REG.Register("naval_command", {
 	name = "Naval Command",
+	unitType = "command",
 	shortName = "COMMAND",
 	kind = "unit",
 	parent = "republic_navy",
@@ -438,6 +644,7 @@ REG.Register("naval_command", {
 
 REG.Register("naval_aviation", {
 	name = "Naval Aviation",
+	unitType = "aviation",
 	shortName = "AVIATION",
 	kind = "unit",
 	parent = "republic_navy",

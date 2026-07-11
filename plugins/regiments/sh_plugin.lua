@@ -1,8 +1,8 @@
 -- swrp/plugins/regiments/sh_plugin.lua
 
-PLUGIN.name = "SWRP Regiment Directory V2"
+PLUGIN.name = "SWRP Regiment Directory V5"
 PLUGIN.author = "Sam"
-PLUGIN.description = "Adds a simplified player directory and permission-controlled regiment management suite to the Helix TAB menu."
+PLUGIN.description = "Adds regiment personnel management, automatic service names and admin-configured formation model loadouts to the Helix TAB menu."
 
 if (CLIENT) then
 	function PLUGIN:CreateMenuButtons(tabs)

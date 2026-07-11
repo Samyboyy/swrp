@@ -66,9 +66,57 @@ end
 
 local function callsignFromName(name)
     name = string.Trim(tostring(name or ""))
-    local stripped = name:gsub("^[Cc][Tt][%s%-_:]*%d%d%d%d[%s%-_:]*", "")
-    stripped = string.Trim(stripped)
-    return stripped ~= "" and stripped or name
+
+    -- Service names can be formatted as either "CT RCT 1147 Sam" or
+    -- "501st CPT 1147 Sam". Everything after the four-digit service number
+    -- is the callsign, regardless of the current regiment prefix or rank.
+    local _, numberEnd = string.find(name, "%d%d%d%d")
+    if numberEnd then
+        local stripped = string.Trim(string.sub(name, numberEnd + 1):gsub("^[%s%-_:]+", ""))
+        if stripped ~= "" then
+            return stripped
+        end
+    end
+
+    return name
+end
+
+local function getRegimentPresentation(value)
+    local raw = string.Trim(tostring(value or ""))
+    local lowered = string.lower(raw)
+    local registry = SWRP and SWRP.Regiments or nil
+
+    if registry and isfunction(registry.GetPrimaryRegiment) and isfunction(registry.Get) then
+        local success, primaryID = pcall(registry.GetPrimaryRegiment, raw)
+        if success and primaryID then
+            local nodeSuccess, node = pcall(registry.Get, primaryID)
+            if nodeSuccess and istable(node) then
+                local assigned = node.id ~= "unassigned"
+                return {
+                    id = node.id,
+                    prefix = node.namePrefix or node.shortName or (assigned and node.name or "CT"),
+                    shortName = assigned and (node.shortName or node.namePrefix or node.id) or "UNASSIGNED",
+                    name = assigned and (node.name or node.shortName or raw) or "UNASSIGNED",
+                    colour = node.colour,
+                    assigned = assigned
+                }
+            end
+        end
+    end
+
+    -- Fallbacks keep the datapad useful if the regiment plugin has not loaded
+    -- yet or this page is copied into a development branch on its own.
+    if raw == "" or lowered == "none" or lowered == "unassigned" or lowered == "ct" then
+        return {id = "unassigned", prefix = "CT", shortName = "UNASSIGNED", name = "UNASSIGNED", assigned = false}
+    elseif string.find(lowered, "501", 1, true) then
+        return {id = "501st", prefix = "501st", shortName = "501ST", name = "501st Legion", assigned = true}
+    elseif string.find(lowered, "212", 1, true) then
+        return {id = "212th", prefix = "212th", shortName = "212TH", name = "212th Attack Battalion", assigned = true}
+    elseif string.find(lowered, "navy", 1, true) then
+        return {id = "republic_navy", prefix = "Navy", shortName = "NAVY", name = "Republic Navy", assigned = true}
+    end
+
+    return {id = lowered, prefix = raw, shortName = raw, name = raw, assigned = true}
 end
 
 function SWRP.Datapad.GetIdentity(character)
@@ -93,6 +141,7 @@ function SWRP.Datapad.GetIdentity(character)
     end
 
     local assignment = class and L(class.name) or (faction and L(faction.name) or "UNASSIGNED")
+    local regimentInfo = getRegimentPresentation(regiment)
     local displayName = callsign ~= "" and callsign or name
     local trainingState = "UNVERIFIED"
 
@@ -118,9 +167,14 @@ function SWRP.Datapad.GetIdentity(character)
         callsign = callsign,
         displayName = displayName,
         cloneNumber = cloneNumber,
-        serviceCode = "CT-" .. cloneNumber,
-        rank = rank ~= "" and rank or "CLONE TROOPER",
-        regiment = regiment ~= "" and regiment or "UNASSIGNED",
+        serviceCode = tostring(regimentInfo.prefix or "CT") .. "-" .. cloneNumber,
+        rank = rank ~= "" and rank or "RCT",
+        regiment = regimentInfo.assigned and (regimentInfo.shortName or regimentInfo.prefix or regimentInfo.id) or "UNASSIGNED",
+        regimentID = regimentInfo.id,
+        regimentName = regimentInfo.name,
+        regimentPrefix = regimentInfo.prefix or "CT",
+        regimentColour = regimentInfo.colour,
+        hasRegiment = regimentInfo.assigned == true,
         assignment = string.upper(tostring(assignment)),
         level = math.max(1, math.floor(tonumber(characterMethod(character, "GetLevel", 1)) or 1)),
         xp = math.max(0, math.floor(tonumber(characterMethod(character, "GetXp", 0)) or 0)),
@@ -177,7 +231,62 @@ local function applyMenuModelFade(panel)
     end
 end
 
-local function configureCharacterModel(panel, fullBody)
+local MODEL_CAMERA_PROFILES = {
+    -- Small square portrait in the persistent top-left personnel card.
+    -- Aim above the upper chest and pull back only slightly so helmets stay
+    -- completely inside the frame without turning the portrait into a bust shot.
+    mini = {
+        fov = 25,
+        lookHeight = 0.89,
+        cameraHeight = 0.89,
+        distance = 0.58
+    },
+
+    -- Wider personnel-roster portrait. Keep more of the shoulders than the mini
+    -- card, but raise the focus enough that clone helmets and faces are visible.
+    roster = {
+        fov = 25,
+        lookHeight = 0.87,
+        cameraHeight = 0.87,
+        distance = 0.55
+    },
+
+    -- Default close portrait retained for any future call site that does not
+    -- explicitly choose a profile.
+    portrait = {
+        fov = 24,
+        lookHeight = 0.84,
+        cameraHeight = 0.84,
+        distance = 0.54
+    }
+}
+
+local function frameModelPanel(panel, entity, fullBody, cameraProfile)
+    local minimum, maximum = entity:GetRenderBounds()
+    local height = math.max(maximum.z - minimum.z, 1)
+
+    if fullBody then
+        -- Preserve the existing full-body framing. This hotfix only changes
+        -- the compact identity and roster portrait cameras.
+        panel:SetFOV(31)
+        panel:SetLookAt(Vector(0, 0, minimum.z + height * 0.51))
+        panel:SetCamPos(Vector(height * 1.05, height * 0.05, minimum.z + height * 0.52))
+        return
+    end
+
+    local profile = MODEL_CAMERA_PROFILES[cameraProfile] or MODEL_CAMERA_PROFILES.portrait
+    local lookZ = minimum.z + height * profile.lookHeight
+
+    panel:SetFOV(profile.fov)
+    panel:SetLookAt(Vector(0, 0, lookZ))
+    panel:SetCamPos(Vector(
+        height * profile.distance,
+        0,
+        minimum.z + height * profile.cameraHeight
+    ))
+end
+
+local function configureCharacterModel(panel, fullBody, cameraProfile)
     if not IsValid(panel) or not IsValid(LocalPlayer()) then
         return
     end
@@ -190,7 +299,6 @@ local function configureCharacterModel(panel, fullBody)
     end
 
     panel:SetModel(model)
-    panel:SetFOV(fullBody and 31 or 24)
     panel:SetAmbientLight(Color(82, 116, 140))
     panel:SetDirectionalLight(BOX_FRONT, Color(190, 220, 235))
     panel:SetDirectionalLight(BOX_TOP, Color(85, 125, 155))
@@ -207,17 +315,7 @@ local function configureCharacterModel(panel, fullBody)
         entity:SetBodygroup(index, LocalPlayer():GetBodygroup(index))
     end
 
-    local minimum, maximum = entity:GetRenderBounds()
-    local centre = (minimum + maximum) * 0.5
-    local height = math.max(maximum.z - minimum.z, 1)
-
-    if fullBody then
-        panel:SetLookAt(Vector(0, 0, minimum.z + height * 0.51))
-        panel:SetCamPos(Vector(height * 1.05, height * 0.05, minimum.z + height * 0.52))
-    else
-        panel:SetLookAt(Vector(0, 0, minimum.z + height * 0.80))
-        panel:SetCamPos(Vector(height * 0.52, 0, minimum.z + height * 0.80))
-    end
+    frameModelPanel(panel, entity, fullBody, cameraProfile)
 
     panel.LayoutEntity = function(current, modelEntity)
         if IsValid(modelEntity) then
@@ -226,7 +324,7 @@ local function configureCharacterModel(panel, fullBody)
     end
 end
 
-local function configureClientModel(panel, client, fullBody)
+local function configureClientModel(panel, client, fullBody, cameraProfile)
     if not IsValid(panel) or not IsValid(client) then return end
 
     applyMenuModelFade(panel)
@@ -235,7 +333,6 @@ local function configureClientModel(panel, client, fullBody)
     if not isstring(model) or model == "" then return end
 
     panel:SetModel(model)
-    panel:SetFOV(fullBody and 31 or 24)
     panel:SetAmbientLight(Color(82, 116, 140))
     panel:SetDirectionalLight(BOX_FRONT, Color(190, 220, 235))
     panel:SetDirectionalLight(BOX_TOP, Color(85, 125, 155))
@@ -249,10 +346,8 @@ local function configureClientModel(panel, client, fullBody)
         entity:SetBodygroup(index, client:GetBodygroup(index))
     end
 
-    local minimum, maximum = entity:GetRenderBounds()
-    local height = math.max(maximum.z - minimum.z, 1)
-    panel:SetLookAt(Vector(0, 0, minimum.z + height * (fullBody and 0.51 or 0.80)))
-    panel:SetCamPos(Vector(height * (fullBody and 1.05 or 0.52), 0, minimum.z + height * (fullBody and 0.52 or 0.80)))
+    frameModelPanel(panel, entity, fullBody, cameraProfile)
+
     panel.LayoutEntity = function(_, modelEntity)
         if IsValid(modelEntity) then modelEntity:SetAngles(angle_zero) end
     end
@@ -313,7 +408,7 @@ function PANEL:Init()
 
     timer.Simple(0, function()
         if IsValid(self.model) then
-            configureCharacterModel(self.model, false)
+            configureCharacterModel(self.model, false, "mini")
         end
     end)
 
@@ -323,7 +418,7 @@ end
 function PANEL:Think()
     if CurTime() >= self.nextModelRefresh then
         self.nextModelRefresh = CurTime() + 2
-        configureCharacterModel(self.model, false)
+        configureCharacterModel(self.model, false, "mini")
     end
 end
 
@@ -927,6 +1022,25 @@ local function branchColour(node, alpha)
     return Color(colour[1] or 73, colour[2] or 132, colour[3] or 207, alpha or 255)
 end
 
+-- Shorten a label to fit maxWidth, appending an ellipsis. Returns nil when there
+-- is not even room for a truncated label, so callers can hide it entirely rather
+-- than letting neighbouring labels collide.
+local function fitText(text, font, maxWidth)
+    if maxWidth <= 0 then return nil end
+    surface.SetFont(font)
+    local width = surface.GetTextSize(text)
+    if width <= maxWidth then return text end
+
+    local ellipsis = "…"
+    for length = #text - 1, 1, -1 do
+        local candidate = string.sub(text, 1, length)
+        if surface.GetTextSize(candidate .. ellipsis) <= maxWidth then
+            return candidate .. ellipsis
+        end
+    end
+    return nil
+end
+
 PANEL = {}
 
 function PANEL:Init()
@@ -1028,6 +1142,11 @@ end
 function PANEL:GetTree() return SWRP.Datapad and SWRP.Datapad.UpgradeTree or nil end
 function PANEL:GetMask() local tree = self:GetTree() return tree and tree.GetMask(getCharacter()) or 0 end
 
+-- Single source of truth for node/root radii so hit-testing, node drawing and
+-- connector trimming stay in agreement at every zoom level.
+function PANEL:NodeRadius() return math.Clamp(40 * self.zoom, 23, 46) end
+function PANEL:RootRadius() return math.Clamp(54 * self.zoom, 32, 60) end
+
 function PANEL:GetNodeState(node)
     local tree, character = self:GetTree(), getCharacter()
     if not tree or not node or not character then return "locked", false, 0, 0, 0 end
@@ -1065,13 +1184,15 @@ function PANEL:ResetView()
     local bounds = tree.bounds
     local worldWidth = math.max(bounds.maxX - bounds.minX, 1)
     local worldHeight = math.max(bounds.maxY - bounds.minY, 1)
-    local paddingX, paddingY = 150, 120
+    local paddingX, paddingY = 100, 64
     local availableWidth = math.max(width - paddingX * 2, 1)
     local availableHeight = math.max(height - paddingY * 2, 1)
     local centreX = (bounds.minX + bounds.maxX) * 0.5
     local centreY = (bounds.minY + bounds.maxY) * 0.5
 
-    self.zoom = math.Clamp(math.min(availableWidth / worldWidth, availableHeight / worldHeight), 0.34, 0.94)
+    -- Floor is low enough that the entire tree fits on short panels; ceiling keeps
+    -- the fitted view from ballooning on very wide ones.
+    self.zoom = math.Clamp(math.min(availableWidth / worldWidth, availableHeight / worldHeight), 0.12, 0.9)
     self.panX = -centreX * self.zoom
     self.panY = -centreY * self.zoom
     self.viewInitialised = true
@@ -1084,8 +1205,8 @@ function PANEL:ClampPan()
     local width, height = self:GetSize()
     local bounds = tree.bounds
     local padding = 120
-    local slackX = math.max(width * 0.42, 260)
-    local slackY = math.max(height * 0.42, 220)
+    local slackX = math.max(width * 0.6, 340)
+    local slackY = math.max(height * 0.6, 300)
 
     -- Allow deliberate overscroll so the user can still pan around while
     -- zoomed in, instead of the view feeling like it is glued in place.
@@ -1099,7 +1220,7 @@ function PANEL:ClampPan()
 end
 
 function PANEL:SetZoom(value, cursorX, cursorY)
-    local newZoom = math.Clamp(value, 0.34, 1.25)
+    local newZoom = math.Clamp(value, 0.12, 1.4)
     cursorX, cursorY = cursorX or self:GetWide() * 0.5, cursorY or self:GetTall() * 0.5
     local worldX, worldY = self:PanelToWorld(cursorX, cursorY)
     self.zoom = newZoom
@@ -1111,10 +1232,10 @@ end
 function PANEL:FindNodeAt(x, y)
     local tree = self:GetTree()
     if not tree then return nil end
+    local radius = self:NodeRadius() + 5
     for index = #tree.nodes, 1, -1 do
         local node = tree.nodes[index]
         local nodeX, nodeY = self:WorldToPanel(node.x, node.y)
-        local radius = math.Clamp(43 * self.zoom, 25, 48)
         local dx, dy = x - nodeX, y - nodeY
         if dx * dx + dy * dy <= radius * radius then return node end
     end
@@ -1263,30 +1384,91 @@ end
 
 function PANEL:DrawTreeNode(node)
     local state = self:GetNodeState(node)
-    local installed, available = state == "installed", state == "available"
+    local installed = state == "installed"
+    local available = state == "available"
     local hovered = self.hoveredNodeID == node.id
     local selected = self.selectedNodeID == node.id
     local pending = self.pendingNodeID == node.id
+
     local branch = branchColour(node, 255)
-    local ring, fill, textColour = branch, Color(5, 16, 27, 248), Color(125, 148, 164)
-    if installed then ring, fill, textColour = Color(105, 220, 175), Color(8, 35, 34, 252), Color(204, 244, 227)
-    elseif available then fill, textColour = hovered and Color(17, 48, 70, 252) or Color(9, 29, 45, 250), color_white
-    elseif state == "no_points" then ring, fill, textColour = Color(190, 151, 75), Color(31, 25, 14, 248), Color(211, 186, 131)
-    elseif state == "locked" then ring = Color(64, 83, 98) end
+    local ring, fill, textColour = branch, Color(6, 18, 30, 248), Color(120, 143, 159)
+    if installed then
+        ring, fill, textColour = Color(104, 224, 199), Color(8, 34, 34, 252), Color(206, 246, 236)
+    elseif available then
+        fill, textColour = hovered and Color(17, 48, 70, 252) or Color(9, 29, 45, 250), color_white
+    elseif state == "no_points" then
+        ring, fill, textColour = Color(196, 158, 84), Color(30, 25, 14, 248), Color(214, 190, 137)
+    elseif state == "capped" then
+        ring, fill, textColour = Color(150, 132, 96), Color(24, 22, 15, 248), Color(182, 166, 132)
+    elseif state == "locked" then
+        ring = Color(78, 100, 118)
+    end
 
     local x, y = self:WorldToPanel(node.x, node.y)
-    local radius = math.Clamp(43 * self.zoom, 25, 48)
-    if hovered or selected or pending then filledCircle(x, y, radius + 10, Color(ring.r, ring.g, ring.b, hovered and 34 or 20), 36) end
-    filledCircle(x, y, radius, fill, 36)
-    surface.SetDrawColor(ring.r, ring.g, ring.b, available and 240 or 175)
-    surface.DrawCircle(x, y, radius, ring.r, ring.g, ring.b, available and 240 or 175)
-    surface.DrawCircle(x, y, math.max(radius - 5, 1), ring.r, ring.g, ring.b, 85)
+    local radius = self:NodeRadius()
 
-    local symbol = installed and "✓" or (pending and "…" or string.format("%02d", node.order))
-    draw.SimpleText(symbol, radius >= 35 and "swrpDatapadBodyBold" or "swrpDatapadSmall", x, y, textColour, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    if self.zoom >= 0.46 then
-        draw.SimpleText(string.upper(node.title), "swrpDatapadCategory", x, y + radius + 13, textColour, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        draw.SimpleText(node.effect or "", "swrpDatapadSmall", x, y + radius + 31, Color(ring.r, ring.g, ring.b, (installed or available) and 225 or 120), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    if hovered or selected or pending then
+        filledCircle(x, y, radius + 9, Color(ring.r, ring.g, ring.b, hovered and 40 or 24), 34)
+    end
+    filledCircle(x, y, radius, fill, 34)
+    surface.DrawCircle(x, y, radius, ring.r, ring.g, ring.b, available and 245 or 185)
+    surface.DrawCircle(x, y, math.max(radius - 4, 1), ring.r, ring.g, ring.b, 90)
+
+    -- Selected node gets a thicker, brighter rim so the active choice stands out.
+    if selected then
+        surface.DrawCircle(x, y, radius + 3, ring.r, ring.g, ring.b, 235)
+        surface.DrawCircle(x, y, radius + 4, ring.r, ring.g, ring.b, 150)
+    end
+
+    local symbol = installed and "✓" or (pending and "…" or tostring(node.depth or node.order))
+    draw.SimpleText(symbol, radius >= 30 and "swrpDatapadBodyBold" or "swrpDatapadSmall", x, y, textColour, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+
+    -- Labels are secondary. Drop the effect line first, then the title, before we
+    -- would ever let neighbouring labels collide. The hovered/selected node's full
+    -- label is drawn on top after every node (see DrawNodeLabelOverlay).
+    if hovered or selected then return end
+
+    local maxLabelWidth = math.max(150 * self.zoom, 54)
+    if self.zoom < 0.42 then return end
+
+    local title = fitText(string.upper(node.title), "swrpDatapadCategory", maxLabelWidth)
+    if title then
+        draw.SimpleText(title, "swrpDatapadCategory", x, y + radius + 12, textColour, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+
+    if self.zoom >= 0.66 then
+        local effect = fitText(node.effect or "", "swrpDatapadSmall", maxLabelWidth)
+        if effect then
+            draw.SimpleText(effect, "swrpDatapadSmall", x, y + radius + 29, Color(ring.r, ring.g, ring.b, (installed or available) and 225 or 130), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        end
+    end
+end
+
+-- Full, un-truncated label for the hovered/selected node, drawn above every other
+-- node with a dark backing so it stays readable over its neighbours.
+function PANEL:DrawNodeLabelOverlay(node)
+    if not node then return end
+    local x, y = self:WorldToPanel(node.x, node.y)
+    local radius = self:NodeRadius()
+    local ring = branchColour(node, 255)
+    local title = string.upper(node.title)
+    local effect = node.effect or ""
+
+    surface.SetFont("swrpDatapadCategory")
+    local titleWidth = surface.GetTextSize(title)
+    surface.SetFont("swrpDatapadSmall")
+    local effectWidth = effect ~= "" and surface.GetTextSize(effect) or 0
+
+    local boxWidth = math.max(titleWidth, effectWidth) + 22
+    local boxHeight = effect ~= "" and 42 or 27
+    local boxX, boxY = x - boxWidth * 0.5, y + radius + 7
+
+    draw.RoundedBox(3, boxX, boxY, boxWidth, boxHeight, Color(3, 12, 20, 246))
+    surface.SetDrawColor(ring.r, ring.g, ring.b, 155)
+    surface.DrawOutlinedRect(boxX, boxY, boxWidth, boxHeight)
+    draw.SimpleText(title, "swrpDatapadCategory", x, boxY + 7, color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+    if effect ~= "" then
+        draw.SimpleText(effect, "swrpDatapadSmall", x, boxY + 23, Color(ring.r, ring.g, ring.b, 235), TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
     end
 end
 
@@ -1301,14 +1483,6 @@ function PANEL:Paint(width, height)
         local sx = (star.x * width + self.panX * 0.06) % width
         local sy = (star.y * height + self.panY * 0.04) % height
         draw.RoundedBox(4, sx, sy, star.size, star.size, Color(220, 242, 255, star.alpha))
-    end
-
-    for _, glow in ipairs({
-        {x = width * 0.38, y = height * 0.33, r = math.min(width, height) * 0.18, c = Color(75, 165, 255, 12)},
-        {x = width * 0.62, y = height * 0.56, r = math.min(width, height) * 0.16, c = Color(88, 212, 188, 10)},
-        {x = width * 0.52, y = height * 0.46, r = math.min(width, height) * 0.11, c = Color(255, 210, 120, 8)}
-    }) do
-        filledCircle(glow.x, glow.y, glow.r, glow.c, 38)
     end
 
     surface.SetDrawColor(accent.r, accent.g, accent.b, 7)
@@ -1327,96 +1501,113 @@ function PANEL:Paint(width, height)
 
     local mask = self:GetMask()
     local rootX, rootY = self:WorldToPanel(tree.root.x, tree.root.y)
-    local rootRadius = math.Clamp(58 * self.zoom, 35, 62)
+    local rootRadius = self:RootRadius()
+    local nodeRadius = self:NodeRadius()
+    local selectedID = self.selectedNodeID
 
-    -- Tint each discipline as a wedge radiating out from the centre node. This
-    -- keeps each path visually grouped, while still making the connecting lines
-    -- and node order easy to read.
+    -- Restrained coloured region per discipline. Each begins outside a neutral
+    -- ring around the root, stays low-opacity, and leaves a clear gap to its
+    -- neighbours so the region groups a branch without ever fighting the lines.
+    local innerRing = rootRadius + math.Clamp(46 * self.zoom, 26, 46)
     for _, branch in ipairs(tree.branches or {}) do
         local startAngle = tonumber(branch.sectorStart)
         local endAngle = tonumber(branch.sectorEnd)
 
         if startAngle and endAngle then
-            local outerRadius = rootRadius + 180
-
+            local outerRadius = innerRing + 60
             for _, node in ipairs(branch.nodes or {}) do
-                local nodeX, nodeY = self:WorldToPanel(node.x, node.y)
-                local dx, dy = nodeX - rootX, nodeY - rootY
-                outerRadius = math.max(outerRadius, math.sqrt(dx * dx + dy * dy) + math.Clamp(100 * self.zoom, 72, 126))
+                local nx, ny = self:WorldToPanel(node.x, node.y)
+                local dx, dy = nx - rootX, ny - rootY
+                outerRadius = math.max(outerRadius, math.sqrt(dx * dx + dy * dy) + math.Clamp(58 * self.zoom, 40, 62))
             end
 
             local colour = Color(branch.colour[1], branch.colour[2], branch.colour[3])
-            local innerRadius = rootRadius + math.Clamp(150 * self.zoom, 92, 146)
-            drawSector(rootX, rootY, innerRadius, outerRadius, startAngle, endAngle, Color(colour.r, colour.g, colour.b, 9), 42)
+            drawSector(rootX, rootY, innerRing, outerRadius, startAngle, endAngle, Color(colour.r, colour.g, colour.b, 14), 40)
 
-            -- Thin sector boundaries keep each discipline visually separate
-            -- without the coloured areas overpowering the actual pathways.
             for _, boundaryAngle in ipairs({startAngle, endAngle}) do
                 local radians = math.rad(boundaryAngle)
-                local x1 = rootX + math.cos(radians) * innerRadius
-                local y1 = rootY + math.sin(radians) * innerRadius
-                local x2 = rootX + math.cos(radians) * outerRadius
-                local y2 = rootY + math.sin(radians) * outerRadius
-                drawBeam(x1, y1, x2, y2, Color(colour.r, colour.g, colour.b, 60), math.Clamp(3 * self.zoom, 1, 3))
+                drawBeam(
+                    rootX + math.cos(radians) * innerRing, rootY + math.sin(radians) * innerRing,
+                    rootX + math.cos(radians) * outerRadius, rootY + math.sin(radians) * outerRadius,
+                    Color(colour.r, colour.g, colour.b, 34), math.Clamp(2 * self.zoom, 1, 2)
+                )
             end
         end
     end
 
-    -- Draw connections before nodes. Locked paths remain visible, while the
-    -- currently available route is bright enough to read at every zoom level.
+    -- Connectors are drawn before nodes and trimmed to the circle edges, so every
+    -- prerequisite reads as a line running node-to-node. Four states are distinct:
+    -- purchased (green/cyan), available (bright branch), partially-reachable
+    -- (dimmer branch), and locked (desaturated blue-grey but still clearly visible).
     for _, node in ipairs(tree.nodes or {}) do
         for _, requirementID in ipairs(node.requires or {}) do
             local requirement = tree.GetNode(requirementID)
             if requirement then
                 local x1, y1 = self:WorldToPanel(requirement.x, requirement.y)
                 local x2, y2 = self:WorldToPanel(node.x, node.y)
-                local colour = branchColour(node, 175)
-                local glow = Color(colour.r, colour.g, colour.b, 48)
-                local core = Color(215, 232, 242, 62)
+                local r1 = requirement.id == "root" and rootRadius or nodeRadius
 
+                local lineColour, glow, core, baseWidth
                 if tree.IsUnlocked(mask, requirement) and tree.IsUnlocked(mask, node) then
-                    colour = Color(105, 220, 175, 255)
-                    glow = Color(105, 220, 175, 105)
-                    core = Color(235, 255, 246, 180)
+                    lineColour = Color(104, 224, 199, 255)
+                    glow, core, baseWidth = Color(104, 224, 199, 115), Color(236, 255, 248, 190), 7
                 elseif tree.PrerequisitesMet(mask, node) then
-                    colour = branchColour(node, 255)
-                    glow = Color(colour.r, colour.g, colour.b, 105)
-                    core = Color(235, 247, 255, 145)
+                    lineColour = branchColour(node, 255)
+                    glow, core, baseWidth = Color(lineColour.r, lineColour.g, lineColour.b, 120), Color(236, 247, 255, 150), 7
                 elseif tree.IsUnlocked(mask, requirement) then
-                    colour = branchColour(node, 215)
-                    glow = Color(colour.r, colour.g, colour.b, 76)
-                    core = Color(220, 235, 245, 95)
+                    lineColour = branchColour(node, 205)
+                    glow, core, baseWidth = Color(lineColour.r, lineColour.g, lineColour.b, 70), Color(220, 235, 245, 85), 6
+                else
+                    lineColour = Color(96, 118, 138, 215)
+                    glow, core, baseWidth = Color(72, 92, 110, 55), Color(150, 170, 186, 55), 5
                 end
 
-                -- Three layers make every prerequisite route obvious even when
-                -- the node itself is still locked: dark separation, coloured
-                -- branch beam, then a fine bright core.
-                drawBeam(x1, y1, x2, y2, Color(0, 5, 10, 220), math.Clamp(18 * self.zoom, 9, 18))
-                drawBeam(x1, y1, x2, y2, glow, math.Clamp(14 * self.zoom, 7, 14))
-                drawBeam(x1, y1, x2, y2, colour, math.Clamp(7 * self.zoom, 4, 7))
-                drawBeam(x1, y1, x2, y2, core, math.Clamp(2.2 * self.zoom, 1.2, 2.2))
+                local mul = (selectedID == node.id or selectedID == requirementID) and 1.5 or 1
+
+                -- Trim both ends to the node edges, then layer: dark separation,
+                -- soft glow, coloured beam, fine bright core.
+                local dx, dy = x2 - x1, y2 - y1
+                local length = math.sqrt(dx * dx + dy * dy)
+                if length > r1 + nodeRadius + 1 then
+                    local ux, uy = dx / length, dy / length
+                    local sx, sy = x1 + ux * r1, y1 + uy * r1
+                    local ex, ey = x2 - ux * nodeRadius, y2 - uy * nodeRadius
+                    drawBeam(sx, sy, ex, ey, Color(0, 5, 10, 210), math.Clamp(baseWidth * 2.4 * self.zoom * mul, 8, 20))
+                    drawBeam(sx, sy, ex, ey, glow, math.Clamp(baseWidth * 1.9 * self.zoom * mul, 6, 15))
+                    drawBeam(sx, sy, ex, ey, lineColour, math.Clamp(baseWidth * self.zoom * mul, 3, 9))
+                    drawBeam(sx, sy, ex, ey, core, math.Clamp(baseWidth * 0.32 * self.zoom, 1.1, 2.4))
+                end
             end
         end
     end
 
-    filledCircle(rootX, rootY, rootRadius + 10, Color(accent.r, accent.g, accent.b, 22), 42)
+    filledCircle(rootX, rootY, rootRadius + 9, Color(accent.r, accent.g, accent.b, 22), 42)
     filledCircle(rootX, rootY, rootRadius, Color(7, 24, 37, 252), 42)
-    surface.SetDrawColor(accent.r, accent.g, accent.b, 210)
     surface.DrawCircle(rootX, rootY, rootRadius, accent.r, accent.g, accent.b, 210)
+    surface.DrawCircle(rootX, rootY, math.max(rootRadius - 5, 1), accent.r, accent.g, accent.b, 80)
     draw.SimpleText("CT", "swrpDatapadPageTitle", rootX, rootY - 2, color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    draw.SimpleText(tree.root.title, "swrpDatapadBodyBold", rootX, rootY + rootRadius + 20, color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    if self.zoom >= 0.34 then
+        draw.SimpleText(tree.root.title, "swrpDatapadBodyBold", rootX, rootY + rootRadius + 18, color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
 
+    local alignMap = {center = TEXT_ALIGN_CENTER, left = TEXT_ALIGN_LEFT, right = TEXT_ALIGN_RIGHT}
     for _, branch in ipairs(tree.branches or {}) do
         local unlocked, total = tree.GetBranchProgress(mask, branch)
         local titleX, titleY = self:WorldToPanel(branch.titleX, branch.titleY)
         local colour = Color(branch.colour[1], branch.colour[2], branch.colour[3])
-        draw.SimpleText(branch.title, "swrpDatapadBodyBold", titleX, titleY, colour)
-        draw.SimpleText(branch.subtitle .. "  //  " .. unlocked .. "/" .. total, "swrpDatapadSmall", titleX, titleY + 22, Color(colour.r, colour.g, colour.b, 210))
+        local align = alignMap[branch.titleAlign] or TEXT_ALIGN_CENTER
+        draw.SimpleText(branch.title, "swrpDatapadBodyBold", titleX, titleY - 10, colour, align, TEXT_ALIGN_CENTER)
+        draw.SimpleText(branch.subtitle .. "  //  " .. unlocked .. "/" .. total, "swrpDatapadSmall", titleX, titleY + 11, Color(colour.r, colour.g, colour.b, 210), align, TEXT_ALIGN_CENTER)
     end
 
     for _, node in ipairs(tree.nodes or {}) do
         self:DrawTreeNode(node)
     end
+
+    -- Draw the hovered/selected node's full label last so it is never obscured.
+    local emphasisID = self.hoveredNodeID or self.selectedNodeID
+    local emphasisNode = emphasisID and emphasisID ~= "root" and tree.GetNode(emphasisID) or nil
+    if emphasisNode then self:DrawNodeLabelOverlay(emphasisNode) end
 
     draw.SimpleText("CAREER DEVELOPMENT TREE", "swrpDatapadCategory", 16, 14, alphaColor(accent, 225))
     draw.SimpleText(string.format("ZOOM  %d%%", math.Round(self.zoom * 100)), "swrpDatapadSmall", 16, 34, Color(126, 151, 168))
@@ -1717,8 +1908,8 @@ end
 vgui.Register("swrpDatapadInventory", PANEL, "DPanel")
 
 -- -------------------------------------------------------------------------
--- Personnel roster grouped by faction, with each connected player's actual
--- playermodel and a vessel-summary column that keeps the page informative.
+-- Personnel roster grouped by regiment/formation, with each connected player's
+-- actual playermodel and a vessel-summary column that keeps the page informative.
 -- -------------------------------------------------------------------------
 
 PANEL = {}
@@ -1733,26 +1924,22 @@ function PANEL:Init()
     self.summary.Paint = function(panel, width, height)
         local accent = getAccent()
         local clients = player.GetAll()
-        local factionSet = {}
         local staff = 0
         local totalPing = 0
 
         for _, client in ipairs(clients) do
-            local character = client.GetCharacter and client:GetCharacter() or nil
-            local faction = character and ix.faction.indices[character:GetFaction()] or nil
-            factionSet[faction and L(faction.name) or "UNASSIGNED"] = true
             if client:IsAdmin() then staff = staff + 1 end
             totalPing = totalPing + client:Ping()
         end
 
-        local factionCount = table.Count(factionSet)
+        local formationCount = table.Count(self:GetGroupedPersonnel())
         local averagePing = #clients > 0 and math.floor(totalPing / #clients) or 0
         draw.RoundedBox(2, 0, 0, width, height, Color(4, 13, 22, 240))
         drawCorners(0, 0, width, height, alphaColor(accent, 75), 14, 1)
 
         local metrics = {
             {"CONNECTED", tostring(#clients)},
-            {"FACTIONS", tostring(factionCount)},
+            {"FORMATIONS", tostring(formationCount)},
             {"STAFF ONLINE", tostring(staff)},
             {"AVERAGE PING", tostring(averagePing) .. " ms"}
         }
@@ -1804,13 +1991,30 @@ end
 
 function PANEL:GetGroupedPersonnel()
     local grouped = {}
+
     for _, client in ipairs(player.GetAll()) do
         local character = client.GetCharacter and client:GetCharacter() or nil
+        local identity = SWRP.Datapad.GetIdentity(character)
         local faction = character and ix.faction.indices[character:GetFaction()] or nil
-        local factionName = faction and L(faction.name) or "UNASSIGNED PERSONNEL"
-        grouped[factionName] = grouped[factionName] or {faction = faction, clients = {}}
-        grouped[factionName].clients[#grouped[factionName].clients + 1] = client
+        local groupName
+        local groupColour
+
+        if identity.hasRegiment then
+            groupName = identity.regimentName or identity.regiment or "ASSIGNED PERSONNEL"
+            groupColour = identity.regimentColour or (faction and faction.color) or getAccent()
+        else
+            groupName = faction and L(faction.name) or "UNASSIGNED PERSONNEL"
+            groupColour = faction and faction.color or getAccent()
+        end
+
+        grouped[groupName] = grouped[groupName] or {
+            faction = faction,
+            colour = groupColour,
+            clients = {}
+        }
+        grouped[groupName].clients[#grouped[groupName].clients + 1] = client
     end
+
     return grouped
 end
 
@@ -1828,11 +2032,11 @@ function PANEL:PaintVesselSummary(width, height)
     draw.RoundedBox(2, 0, 0, width, height, Color(3, 11, 19, 242))
     drawCorners(0, 0, width, height, alphaColor(accent, 65), 14, 1)
     draw.SimpleText("VESSEL SUMMARY", "swrpDatapadBodyBold", 16, 16, color_white)
-    draw.SimpleText("ACTIVE FACTIONS", "swrpDatapadCategory", 16, 51, alphaColor(accent, 220))
+    draw.SimpleText("ACTIVE FORMATIONS", "swrpDatapadCategory", 16, 51, alphaColor(accent, 220))
 
     local y = 76
     for factionName, group in SortedPairs(grouped) do
-        local colour = group.faction and group.faction.color or accent
+        local colour = group.colour or (group.faction and group.faction.color) or accent
         draw.RoundedBox(2, 14, y, width - 28, 54, Color(5, 15, 25, 230))
         surface.SetDrawColor(colour.r, colour.g, colour.b, 100)
         surface.DrawRect(14, y, 4, 54)
@@ -1877,7 +2081,7 @@ function PANEL:Rebuild()
         header:SetTall(48)
         header:DockMargin(0, 4, 0, 6)
         header.Paint = function(panel, width, height)
-            local colour = factionGroup.faction and factionGroup.faction.color or getAccent()
+            local colour = factionGroup.colour or (factionGroup.faction and factionGroup.faction.color) or getAccent()
             draw.RoundedBox(2, 0, 0, width, height, Color(7, 20, 31, 245))
             surface.SetDrawColor(colour.r, colour.g, colour.b, 180)
             surface.DrawRect(0, 0, 4, height)
@@ -1900,7 +2104,7 @@ function PANEL:Rebuild()
             model:SetPaintBackground(false)
             timer.Simple(0, function()
                 if IsValid(model) and IsValid(rosterClient) then
-                    configureClientModel(model, rosterClient, false)
+                    configureClientModel(model, rosterClient, false, "roster")
                 end
             end)
 
@@ -1911,7 +2115,7 @@ function PANEL:Rebuild()
                 local identity = SWRP.Datapad.GetIdentity(character)
                 local localClient = rosterClient == LocalPlayer()
                 local faction = character and ix.faction.indices[character:GetFaction()] or nil
-                local factionColour = faction and faction.color or accent
+                local factionColour = factionGroup.colour or (faction and faction.color) or accent
 
                 draw.RoundedBox(2, 0, 0, width, height, localClient and Color(12, 31, 47, 242) or Color(4, 13, 22, 238))
                 surface.SetDrawColor(factionColour.r, factionColour.g, factionColour.b, localClient and 135 or 52)
