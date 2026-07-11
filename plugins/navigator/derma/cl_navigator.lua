@@ -95,7 +95,10 @@ local function projectModelPoint(panel, worldPoint)
 	local fov = math.rad(math.Clamp(panel:GetFOV() or 36, 1, 179))
 	-- cam.Start3D uses one projection and square pixels. Using independent X/Y
 	-- focal lengths made the marker drift whenever the panel aspect ratio changed.
-	local focalLength = (height * 0.5) / math.tan(fov * 0.5)
+	-- cam.Start3D/DModelPanel's FOV parameter is the horizontal field of view,
+	-- so the focal length is derived from the viewport width. Using height here
+	-- caused the target to drift with aspect-ratio changes.
+	local focalLength = (width * 0.5) / math.tan(fov * 0.5)
 	local x = width * 0.5 + (relative:Dot(cameraAngle:Right()) / depth) * focalLength
 	local y = height * 0.5 - (relative:Dot(cameraAngle:Up()) / depth) * focalLength
 
@@ -371,9 +374,9 @@ function PANEL:Init()
 		local selectedLocation = self:GetSelectedLocation()
 		local useScreenMarker = selectedLocation and isvector(selectedLocation.hologramScreenAnchor)
 
-		-- Future locations may still opt into model-space tracking. The Training Room
-		-- uses a calibrated screen-space marker with a fixed camera for deterministic
-		-- placement across resolutions.
+		-- Ship room markers can opt into a calibrated screen-space anchor. This is
+		-- deterministic for a decorative hologram model while still allowing other
+		-- destinations to use true model-space projection later.
 		local worldPoint = useScreenMarker and nil or self:CaptureHologramDestinationMarker(panel, entity)
 
 		render.SetColorModulation(1, 1, 1)

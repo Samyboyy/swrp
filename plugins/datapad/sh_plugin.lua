@@ -30,8 +30,8 @@ function PLUGIN:BuildBusinessMenu()
 end
 
 if SERVER then
-    resource.AddFile("sound/swrp/ui/ui_menuBack.wav")
-    resource.AddFile("sound/swrp/ui/ui_menuMove.wav")
+    resource.AddFile("sound/swrp/ui/ui_menuback.wav")
+    resource.AddFile("sound/swrp/ui/ui_menumove.wav")
     resource.AddFile("sound/swrp/ui/ui_planetzoom.wav")
 
     util.AddNetworkString("swrpDatapadRequestStaff")

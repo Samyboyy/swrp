@@ -5,21 +5,21 @@ SWRP = SWRP or {}
 SWRP.Datapad = SWRP.Datapad or {}
 
 SWRP.Datapad.Sounds = {
-    move = {"swrp/ui/ui_menuMove.wav", "swrp/ui/ui_menumove.wav"},
-    back = {"swrp/ui/ui_menuBack.wav", "swrp/ui/ui_menuback.wav"},
+    move = {"swrp/ui/ui_menumove.wav"},
+    back = {"swrp/ui/ui_menuback.wav"},
     zoom = {"swrp/ui/ui_planetzoom.wav"}
 }
 
--- UI sounds are emitted on the engine's dedicated UI entity (-2). This avoids
--- positional attenuation and is more reliable than depending on a panel's
--- paint state. The path remains relative to garrysmod/sound/.
+-- UI sounds are played clientside through surface.PlaySound. Paths are
+-- relative to garrysmod/sound/ and deliberately lowercase for Linux/Source
+-- filesystem compatibility.
 function SWRP.Datapad.PlaySound(kind)
     local candidates = SWRP.Datapad.Sounds[kind]
     if not istable(candidates) then
         return false
     end
 
-    local selected = candidates[1]
+    local selected
     for _, path in ipairs(candidates) do
         if isstring(path) and path ~= "" and file.Exists("sound/" .. path, "GAME") then
             selected = path
@@ -28,17 +28,32 @@ function SWRP.Datapad.PlaySound(kind)
     end
 
     if not isstring(selected) or selected == "" then
+        if not SWRP.Datapad.missingSoundWarnings then
+            SWRP.Datapad.missingSoundWarnings = {}
+        end
+
+        if not SWRP.Datapad.missingSoundWarnings[kind] then
+            SWRP.Datapad.missingSoundWarnings[kind] = true
+            MsgC(Color(225, 105, 90), "[Republic Datapad] Missing UI sound for '", tostring(kind), "'. Expected: sound/", tostring(candidates[1] or "unknown"), "\n")
+        end
+
         return false
     end
 
-    -- Global EmitSound with entity -2 is a non-spatial UI sound. It is local
-    -- when called clientside and works with the supplied PCM WAV files.
-    EmitSound(selected, vector_origin, -2, CHAN_STATIC, 1, 0, 0, 100)
+    -- surface.PlaySound is the engine's purpose-built clientside UI playback
+    -- path. The shipped files are lowercase because Source normalises lookup
+    -- paths and Linux servers/clients use case-sensitive filenames.
+    surface.PlaySound(selected)
     return true
 end
 
 -- Handy client test: swrp_datapad_test_sounds
 concommand.Add("swrp_datapad_test_sounds", function()
+    for kind, candidates in pairs(SWRP.Datapad.Sounds) do
+        local path = candidates[1]
+        MsgC(Color(90, 190, 235), "[Republic Datapad] ", kind, ": ", tostring(path), " | mounted=", tostring(file.Exists("sound/" .. tostring(path), "GAME")), "\n")
+    end
+
     SWRP.Datapad.PlaySound("move")
     timer.Simple(0.8, function() SWRP.Datapad.PlaySound("back") end)
     timer.Simple(1.6, function() SWRP.Datapad.PlaySound("zoom") end)

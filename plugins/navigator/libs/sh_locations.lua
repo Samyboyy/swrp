@@ -11,9 +11,11 @@ SWRP.Navigator.arrivalDistance = 128
 SWRP.Navigator.hologram = {
 	model = "models/swrp/venator_hologram.mdl",
 	fov = 36,
-	-- A fixed camera makes the calibrated screen-space destination marker
-	-- deterministic at every resolution. Set staticCamera=false to restore orbit.
-	staticCamera = true,
+	-- Keep the ship rotating, but allow individual locations to opt into a
+	-- calibrated 2D marker when the compiled model does not expose a reliable
+	-- interior anchor. This is more stable for ship room callouts than trying to
+	-- infer an exact deck coordinate from a decorative hologram mesh.
+	staticCamera = false,
 	fixedOrbitDegrees = 90,
 	orbitSpeed = 7,
 	distanceMultiplier = 1.12,
@@ -33,17 +35,14 @@ SWRP.Navigator.maps["rp_venator_extensive_v1_4"] = {
 		position = Vector(-6150.256348, -2974.776611, -3583.817871),
 		angles = Angle(8.274025, 89.974602, 0),
 
-		-- Calibrated marker inside the fixed-camera model viewport. X is an offset
-		-- from the horizontal centre measured in viewport heights; Y is a height
-		-- percentage. This mirrors DModelPanel perspective scaling and therefore
-		-- stays attached across 16:9, ultrawide and lower-resolution clients.
-		hologramScreenAnchor = Vector(-0.055, 0.55, 0),
-		hologramCalloutAnchor = Vector(0.22, 0.30, 0),
-
-		-- Retained only as a fallback for future destinations that explicitly choose
-		-- model-space tracking instead of the calibrated screen-space mode.
-		hologramAnchor = Vector(0.55, 0.50, 0.15),
+		-- For ship interiors, a calibrated screen-space point is more dependable
+		-- than trying to map an arbitrary room to a decorative hull mesh. The 3D
+		-- model still rotates, but the visible target dot stays locked to the
+		-- approved place on the ship silhouette.
+		hologramScreenAnchor = Vector(-0.04, 0.42, 0),
+		hologramCalloutAnchor = Vector(0.23, 0.30, 0),
 		hologramScreenOffset = Vector(0, 0, 0),
+		hologramAnchor = Vector(0.54, 0.50, 0.34),
 		hologramLabel = "Training Room",
 		hologramCode = "TRN-01"
 	}

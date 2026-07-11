@@ -97,10 +97,20 @@ function SWRP.Datapad.GetIdentity(character)
     local trainingState = "UNVERIFIED"
 
     if SWRP.GetOnboardingState then
-        trainingState = tostring(SWRP.GetOnboardingState(character) or trainingState)
-        trainingState = string.upper(trainingState:gsub("_", " "))
+        local rawTrainingState = string.lower(tostring(SWRP.GetOnboardingState(character) or ""))
+
+        -- The onboarding plugin may expose internal states such as
+        -- "untrained_hq". The personnel datapad should only show the player-
+        -- facing qualification state.
+        if string.find(rawTrainingState, "untrained", 1, true) then
+            trainingState = "UNTRAINED"
+        elseif string.find(rawTrainingState, "trained", 1, true) then
+            trainingState = "TRAINED"
+        end
     elseif characterMethod(character, "GetTrainingCompleted", false) then
         trainingState = "TRAINED"
+    else
+        trainingState = "UNTRAINED"
     end
 
     return {
@@ -815,7 +825,7 @@ function PANEL:Think()
     self.pointsCard:SetCard("UPGRADE POINTS", tostring(identity.skillPoints), "Available development points")
 
     self.assignmentStatusCard:SetCard("CURRENT ASSIGNMENT", string.upper(identity.assignment or "UNASSIGNED"), string.upper(identity.regiment or "REPUBLIC PERSONNEL"))
-    self.routeStatusCard:SetCard("SERVICE RANK", string.upper(identity.rank or "CLONE TROOPER"), "Server-authoritative personnel rank")
+    self.routeStatusCard:SetCard("SERVICE RANK", string.upper((identity.rank and identity.rank ~= "" and identity.rank) or "UNASSIGNED"), "Server-authoritative personnel rank")
     self.vesselStatusCard:SetCard("VESSEL PERSONNEL", tostring(#player.GetAll()) .. " ONLINE", "Connected personnel")
 
     local client = LocalPlayer()
@@ -903,6 +913,16 @@ function PANEL:Init()
     self.lastHoverSoundNode = nil
     self.lastZoomSound = 0
     self.lastLayoutWidth, self.lastLayoutHeight = 0, 0
+    self.spaceDust = {}
+
+    for index = 1, 150 do
+        self.spaceDust[index] = {
+            x = math.Rand(0, 1),
+            y = math.Rand(0, 1),
+            size = math.Rand(1, 2.8),
+            alpha = math.random(30, 120)
+        }
+    end
 
     local function addControl(label, action)
         local button = self:Add("DButton")
@@ -953,6 +973,29 @@ function PANEL:Init()
         surface.SetDrawColor(accent.r, accent.g, accent.b, enabled and 190 or 70)
         surface.DrawOutlinedRect(0, 0, width, height)
         draw.SimpleText(button.swrpLabel or "SELECT NODE", "swrpDatapadBodyBold", width * 0.5, height * 0.5, enabled and color_white or Color(122, 131, 138), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+
+    self.closeDossierButton = self:Add("DButton")
+    self.closeDossierButton:SetText("")
+    self.closeDossierButton:SetVisible(false)
+    self.closeDossierButton:SetZPos(510)
+    self.closeDossierButton:SetTooltip("Close upgrade dossier")
+    self.closeDossierButton.OnCursorEntered = function()
+        SWRP.Datapad.PlaySound("move")
+    end
+    self.closeDossierButton.DoClick = function()
+        self.selectedNodeID = nil
+        self.purchaseButton:SetVisible(false)
+        self.closeDossierButton:SetVisible(false)
+        SWRP.Datapad.PlaySound("back")
+    end
+    self.closeDossierButton.Paint = function(button, width, height)
+        local hovered = button:IsHovered()
+        local accent = getAccent()
+        draw.RoundedBox(2, 0, 0, width, height, hovered and Color(62, 25, 28, 252) or Color(12, 24, 34, 250))
+        surface.SetDrawColor(hovered and 220 or accent.r, hovered and 92 or accent.g, hovered and 92 or accent.b, hovered and 220 or 105)
+        surface.DrawOutlinedRect(0, 0, width, height)
+        draw.SimpleText("X", "swrpDatapadPageTitle", width * 0.5, height * 0.46, hovered and Color(255, 225, 225) or Color(182, 202, 214), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
 end
 
@@ -1014,24 +1057,19 @@ function PANEL:ClampPan()
 
     local width, height = self:GetSize()
     local bounds = tree.bounds
-    local padding = 95
+    local padding = 120
+    local slackX = math.max(width * 0.42, 260)
+    local slackY = math.max(height * 0.42, 220)
 
-    local lowerX = padding - width * 0.5 - bounds.minX * self.zoom
-    local upperX = width * 0.5 - padding - bounds.maxX * self.zoom
-    local lowerY = padding - height * 0.5 - bounds.minY * self.zoom
-    local upperY = height * 0.5 - padding - bounds.maxY * self.zoom
+    -- Allow deliberate overscroll so the user can still pan around while
+    -- zoomed in, instead of the view feeling like it is glued in place.
+    local lowerX = padding - width * 0.5 - bounds.maxX * self.zoom - slackX
+    local upperX = width * 0.5 - padding - bounds.minX * self.zoom + slackX
+    local lowerY = padding - height * 0.5 - bounds.maxY * self.zoom - slackY
+    local upperY = height * 0.5 - padding - bounds.minY * self.zoom + slackY
 
-    if lowerX <= upperX then
-        self.panX = math.Clamp(self.panX, lowerX, upperX)
-    else
-        self.panX = -((bounds.minX + bounds.maxX) * 0.5) * self.zoom
-    end
-
-    if lowerY <= upperY then
-        self.panY = math.Clamp(self.panY, lowerY, upperY)
-    else
-        self.panY = -((bounds.minY + bounds.maxY) * 0.5) * self.zoom
-    end
+    self.panX = math.Clamp(self.panX, lowerX, upperX)
+    self.panY = math.Clamp(self.panY, lowerY, upperY)
 end
 
 function PANEL:SetZoom(value, cursorX, cursorY)
@@ -1132,7 +1170,7 @@ function PANEL:GetTooltipRect(node)
 end
 
 function PANEL:UpdatePurchaseButton()
-    if not IsValid(self.purchaseButton) then
+    if not IsValid(self.purchaseButton) or not IsValid(self.closeDossierButton) then
         return
     end
 
@@ -1140,6 +1178,7 @@ function PANEL:UpdatePurchaseButton()
     local node = tree and self.selectedNodeID and tree.GetNode(self.selectedNodeID) or nil
     if not node then
         self.purchaseButton:SetVisible(false)
+        self.closeDossierButton:SetVisible(false)
         return
     end
 
@@ -1156,10 +1195,14 @@ function PANEL:UpdatePurchaseButton()
     local x, y, width, height = self:GetTooltipRect(node)
     self.purchaseButton:SetPos(x + width - 206, y + height - 52)
     self.purchaseButton:SetSize(186, 36)
+    self.closeDossierButton:SetPos(x + width - 43, y + 11)
+    self.closeDossierButton:SetSize(32, 32)
     self.purchaseButton.swrpLabel = labels[state] or "UNAVAILABLE"
     self.purchaseButton:SetEnabled(available and points >= cost)
     self.purchaseButton:SetVisible(true)
+    self.closeDossierButton:SetVisible(true)
     self.purchaseButton:MoveToFront()
+    self.closeDossierButton:MoveToFront()
 end
 
 function PANEL:PerformLayout(width, height)
@@ -1215,7 +1258,7 @@ function PANEL:DrawTreeNode(node)
 
     local symbol = installed and "✓" or (pending and "…" or string.format("%02d", node.order))
     draw.SimpleText(symbol, radius >= 35 and "swrpDatapadBodyBold" or "swrpDatapadSmall", x, y, textColour, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    if self.zoom >= 0.58 then
+    if self.zoom >= 0.46 then
         draw.SimpleText(string.upper(node.title), "swrpDatapadCategory", x, y + radius + 13, textColour, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         draw.SimpleText(node.effect or "", "swrpDatapadSmall", x, y + radius + 31, Color(ring.r, ring.g, ring.b, (installed or available) and 225 or 120), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
@@ -1226,44 +1269,58 @@ function PANEL:Paint(width, height)
     draw.RoundedBox(2, 0, 0, width, height, Color(2, 9, 16, 248))
     drawCorners(0, 0, width, height, alphaColor(accent, 70), 15, 1)
 
-    surface.SetDrawColor(accent.r, accent.g, accent.b, 9)
-    local gridSize = math.max(math.floor(90 * self.zoom), 34)
-    local gridOffsetX = (self.panX + width * 0.5) % gridSize
-    local gridOffsetY = (self.panY + height * 0.5) % gridSize
+    -- Deep-space backdrop: faint stars plus a soft tactical grid so the tree
+    -- reads more like a Republic star chart than stacked boxes.
+    for _, star in ipairs(self.spaceDust or {}) do
+        local sx = (star.x * width + self.panX * 0.06) % width
+        local sy = (star.y * height + self.panY * 0.04) % height
+        draw.RoundedBox(4, sx, sy, star.size, star.size, Color(220, 242, 255, star.alpha))
+    end
+
+    for _, glow in ipairs({
+        {x = width * 0.38, y = height * 0.33, r = math.min(width, height) * 0.18, c = Color(75, 165, 255, 12)},
+        {x = width * 0.62, y = height * 0.56, r = math.min(width, height) * 0.16, c = Color(88, 212, 188, 10)},
+        {x = width * 0.52, y = height * 0.46, r = math.min(width, height) * 0.11, c = Color(255, 210, 120, 8)}
+    }) do
+        filledCircle(glow.x, glow.y, glow.r, glow.c, 38)
+    end
+
+    surface.SetDrawColor(accent.r, accent.g, accent.b, 7)
+    local gridSize = math.max(math.floor(108 * self.zoom), 44)
+    local gridOffsetX = (self.panX * 0.55 + width * 0.5) % gridSize
+    local gridOffsetY = (self.panY * 0.55 + height * 0.5) % gridSize
     for x = gridOffsetX, width, gridSize do surface.DrawLine(x, 0, x, height) end
     for y = gridOffsetY, height, gridSize do surface.DrawLine(0, y, width, y) end
 
     if not tree then
         draw.SimpleText("CAREER TREE LINK UNAVAILABLE", "swrpDatapadPageTitle", width * 0.5, height * 0.5, color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         if IsValid(self.purchaseButton) then self.purchaseButton:SetVisible(false) end
+        if IsValid(self.closeDossierButton) then self.closeDossierButton:SetVisible(false) end
         return
     end
 
     local mask = self:GetMask()
 
-    -- Each discipline occupies its own tinted lane so players can immediately
-    -- understand which path a node belongs to, even when zoomed out.
+    -- Each discipline gets a soft nebula glow rather than a hard rectangle, so
+    -- the branches feel like separate constellations without losing clarity.
     for _, branch in ipairs(tree.branches or {}) do
         local minimumY, maximumY = math.huge, -math.huge
-        local maximumX = tree.root.x
+        local minimumX, maximumX = math.huge, -math.huge
         for _, node in ipairs(branch.nodes or {}) do
+            minimumX = math.min(minimumX, node.x)
+            maximumX = math.max(maximumX, node.x)
             minimumY = math.min(minimumY, node.y)
             maximumY = math.max(maximumY, node.y)
-            maximumX = math.max(maximumX, node.x)
         end
 
         if minimumY ~= math.huge then
-            local x1, y1 = self:WorldToPanel(-505, minimumY - 92)
-            local x2, y2 = self:WorldToPanel(maximumX + 95, maximumY + 92)
-            local left, top = math.min(x1, x2), math.min(y1, y2)
-            local laneWidth, laneHeight = math.abs(x2 - x1), math.abs(y2 - y1)
+            local cx, cy = self:WorldToPanel((minimumX + maximumX) * 0.5, (minimumY + maximumY) * 0.5)
+            local x1, y1 = self:WorldToPanel(minimumX, minimumY)
+            local x2, y2 = self:WorldToPanel(maximumX, maximumY)
+            local glowRadius = math.max(math.abs(x2 - x1), math.abs(y2 - y1)) * 0.42
             local colour = Color(branch.colour[1], branch.colour[2], branch.colour[3])
-
-            draw.RoundedBox(3, left, top, laneWidth, laneHeight, Color(colour.r, colour.g, colour.b, 7))
-            surface.SetDrawColor(colour.r, colour.g, colour.b, 28)
-            surface.DrawOutlinedRect(left, top, laneWidth, laneHeight)
-            surface.SetDrawColor(colour.r, colour.g, colour.b, 105)
-            surface.DrawRect(left, top, math.max(3, math.floor(4 * self.zoom)), laneHeight)
+            filledCircle(cx, cy, glowRadius, Color(colour.r, colour.g, colour.b, 10), 36)
+            filledCircle(cx, cy, glowRadius * 0.68, Color(colour.r, colour.g, colour.b, 6), 28)
         end
     end
 
@@ -1275,7 +1332,7 @@ function PANEL:Paint(width, height)
             if requirement then
                 local x1, y1 = self:WorldToPanel(requirement.x, requirement.y)
                 local x2, y2 = self:WorldToPanel(node.x, node.y)
-                local colour = branchColour(node, 95)
+                local colour = branchColour(node, 145)
 
                 if tree.IsUnlocked(mask, requirement) and tree.IsUnlocked(mask, node) then
                     colour = Color(105, 220, 175, 235)
@@ -1285,8 +1342,8 @@ function PANEL:Paint(width, height)
                     colour = branchColour(node, 155)
                 end
 
-                drawBeam(x1, y1, x2, y2, Color(colour.r, colour.g, colour.b, math.floor((colour.a or 255) * 0.18)), math.Clamp(18 * self.zoom, 8, 18))
-                drawBeam(x1, y1, x2, y2, colour, math.Clamp(5 * self.zoom, 2.5, 5))
+                drawBeam(x1, y1, x2, y2, Color(colour.r, colour.g, colour.b, math.floor((colour.a or 255) * 0.28)), math.Clamp(20 * self.zoom, 9, 20))
+                drawBeam(x1, y1, x2, y2, colour, math.Clamp(6 * self.zoom, 3, 6))
             end
         end
     end
@@ -1318,6 +1375,7 @@ function PANEL:Paint(width, height)
     local selectedNode = self.selectedNodeID and tree.GetNode(self.selectedNodeID) or nil
     if not selectedNode then
         if IsValid(self.purchaseButton) then self.purchaseButton:SetVisible(false) end
+        if IsValid(self.closeDossierButton) then self.closeDossierButton:SetVisible(false) end
         draw.SimpleText("SELECT A NODE TO REVIEW ITS AUTHORISATION", "swrpDatapadSmall", width * 0.5, height - 25, Color(120, 145, 162), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         return
     end
